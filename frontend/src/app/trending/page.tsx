@@ -11,30 +11,13 @@ import { MovieModal } from "@/components/MovieModal";
 import { Footer } from "@/components/Footer";
 import { useRouter } from "next/navigation";
 
-import { CatalogMovie, MovieRecommendation, MovieSearchItem, RecommendationResponse } from "@/types";
-import { MOCK_CATALOG } from "@/data/mock_movies";
+import { CatalogMovie, MovieRecommendation, MovieSearchItem, MovieSearchResponse, RecommendationResponse } from "@/types";
+import { fetchFromApi, describeProvenance, requestError } from "@/utils/api";
 import { getTmdbPosterUrl, getTmdbBackdropUrl } from "@/utils/image";
 
 // How many movies to show initially and how many to add on each "Load More"
 const INITIAL_DISPLAY_COUNT = 12;
 const LOAD_MORE_STEP = 12;
-
-async function fetchFromApi(endpoint: string, options?: RequestInit) {
-  try {
-    const res = await fetch(endpoint, options);
-    if (res.ok) return await res.json();
-  } catch (e) {}
-
-  const ports = [8000, 8001];
-  for (const port of ports) {
-    try {
-      const url = `http://127.0.0.1:${port}${endpoint}`;
-      const res = await fetch(url, options);
-      if (res.ok) return await res.json();
-    } catch (e) {}
-  }
-  throw new Error(`Failed to connect to backend at ${endpoint}`);
-}
 
 /** Sort movies: prioritize those with posters while preserving incoming backend ranking */
 function sortByQuality(movies: CatalogMovie[]): CatalogMovie[] {
@@ -54,6 +37,8 @@ export default function TrendingPage() {
   const [isRefreshingTrending, setIsRefreshingTrending] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [lastTrendingUpdated, setLastTrendingUpdated] = useState<string>("");
+  const [trendingStatus, setTrendingStatus] = useState("");
+  const recRequestId = useRef(0);
   const [recommendationData, setRecommendationData] = useState<RecommendationResponse | null>(null);
   const [isLoadingRec, setIsLoadingRec] = useState(false);
   const [loadingMovieId, setLoadingMovieId] = useState<number | null>(null);
@@ -72,8 +57,8 @@ export default function TrendingPage() {
     setDisplayCount(INITIAL_DISPLAY_COUNT);
     try {
       const endpoint = forceRefresh ? "/api/trending?refresh=true" : "/api/trending";
-      const data = await fetchFromApi(endpoint);
-      if (data.results && data.results.length > 0) {
+      const data = await fetchFromApi<MovieSearchResponse>(endpoint);
+      if (Array.isArray(data.results)) {
         const mapped: CatalogMovie[] = data.results.map((item: MovieSearchItem) => {
           const posterUrl = item.poster_path
             ? getTmdbPosterUrl(item.poster_path)
@@ -104,15 +89,13 @@ export default function TrendingPage() {
         });
         // Render EXACTLY the movies returned by /api/trending in canonical TMDB trending order
         setAllTrendingMovies(mapped);
-        setLastTrendingUpdated(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+        setTrendingStatus(describeProvenance(data.provenance));
+        setLastTrendingUpdated(data.provenance.fetched_at ? new Date(data.provenance.fetched_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
       } else {
-        const fallback = MOCK_CATALOG.filter((m) => m.isTrending);
-        setAllTrendingMovies(fallback.length > 0 ? fallback : MOCK_CATALOG);
+        throw new Error("The backend returned invalid trending results.");
       }
     } catch (err) {
-      console.warn("Using fallback trending movies:", err);
-      const fallback = MOCK_CATALOG.filter((m) => m.isTrending);
-      setAllTrendingMovies(fallback.length > 0 ? fallback : MOCK_CATALOG);
+      setTrendingStatus(previous => `Refresh failed: ${requestError(err)}${previous ? ` · Retained results are not refreshed. Previous source: ${previous}` : " · No results available."}`);
     } finally {
       setIsLoadingTrending(false);
       setIsRefreshingTrending(false);
@@ -132,6 +115,8 @@ export default function TrendingPage() {
   };
 
   const handleGetRecommendations = async (tmdbId: number, query: string) => {
+    const requestId = ++recRequestId.current;
+    setRecommendationData(null);
     setIsLoadingRec(true);
     setLoadingMovieId(tmdbId > 0 ? tmdbId : null);
     setError(null);
@@ -153,13 +138,14 @@ export default function TrendingPage() {
         body: JSON.stringify(payload),
       });
 
-      setRecommendationData(data);
-    } catch (err: any) {
-      console.warn("API Error:", err.message);
-      setError("Unable to generate hybrid recommendations right now. Please try again.");
+      if (requestId === recRequestId.current) setRecommendationData(data);
+    } catch (err) {
+      if (requestId === recRequestId.current) setError(requestError(err));
     } finally {
-      setIsLoadingRec(false);
-      setLoadingMovieId(null);
+      if (requestId === recRequestId.current) {
+        setIsLoadingRec(false);
+        setLoadingMovieId(null);
+      }
     }
   };
 
@@ -225,9 +211,9 @@ export default function TrendingPage() {
         <section className="scroll-mt-24 sm:scroll-mt-28 py-12 sm:py-16 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <SectionHeader
             title="Trending Cinema"
-            subtitle="Live TMDB official daily trending movies with real-time audience acclaim"
+            subtitle={trendingStatus || "TMDB daily trending — awaiting data"}
             icon={Flame}
-            badgeText="TMDB Daily"
+            badgeText="Daily discovery"
             action={
               <div className="flex items-center space-x-3">
                 {lastTrendingUpdated && (
