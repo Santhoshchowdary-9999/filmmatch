@@ -762,10 +762,26 @@ class TMDBService:
                 is_list = endpoint in ("/search/movie", "/discover/movie", "/trending/movie/day") or endpoint.endswith(("/reviews", "/recommendations", "/similar"))
                 if is_list and (not isinstance(data.get("results"), list) or any(not isinstance(item, dict) for item in data["results"])):
                     raise ValueError("Invalid results")
+                if is_list and not endpoint.endswith("/reviews"):
+                    # Reject malformed movie pages before they can replace good cache data.
+                    if any(not isinstance(m.get("id"), int) or not isinstance(m.get("title"), str) or not m["title"] for m in data["results"]):
+                        raise ValueError("Invalid movie list")
+                    self._map_raw_to_search_items(data["results"])
                 if endpoint == "/configuration" and not isinstance(data.get("images"), dict):
                     raise ValueError("Invalid configuration")
-                if endpoint.startswith("/movie/") and not is_list and not isinstance(data.get("id"), int):
-                    raise ValueError("Invalid movie")
+                if endpoint.startswith("/movie/") and not is_list:
+                    if not isinstance(data.get("id"), int) or not isinstance(data.get("title"), str):
+                        raise ValueError("Invalid movie")
+                    float(data.get("vote_average") or 0)
+                    int(data.get("vote_count") or 0)
+                    for name in ("credits", "keywords"):
+                        if data.get(name) is not None and not isinstance(data[name], dict):
+                            raise ValueError("Invalid metadata")
+                    groups = [data.get("genres", []), (data.get("credits") or {}).get("cast", []),
+                              (data.get("credits") or {}).get("crew", []),
+                              (data.get("keywords") or {}).get("keywords", [])]
+                    if any(not isinstance(group, list) or any(not isinstance(item, dict) for item in group) for group in groups):
+                        raise ValueError("Invalid metadata lists")
                 now = time.time()
                 if len(self._cache) >= 1000 and key not in self._cache:
                     oldest = min(self._cache, key=lambda item: self._cache[item][0])
@@ -788,13 +804,6 @@ class TMDBService:
             return cached[2]
         record(endpoint=endpoint, source="none", cache="none", fetched_at=None, error=failure.error)
         raise failure
-
-    def _demo_items(self, movies: list[MovieMetadata], endpoint: str) -> list[MovieSearchItem]:
-        record(endpoint=endpoint, source="offline_demo", cache="none", fetched_at=None)
-        return [MovieSearchItem(tmdb_id=m.tmdb_id, title=m.title, release_date=m.release_date,
-                                original_language=m.original_language, poster_url=m.poster_url,
-                                backdrop_url=m.backdrop_url, vote_average=m.vote_average,
-                                overview=m.overview, genres=m.genres) for m in movies]
 
     def _get_params(self, extra: Optional[dict] = None) -> dict:
         params = {}

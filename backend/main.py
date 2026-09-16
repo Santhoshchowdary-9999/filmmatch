@@ -28,14 +28,15 @@ async def lifespan(app: FastAPI):
     print("[*] Starting FilmMatch AI Backend...")
     try:
         print("[*] Initializing and pre-warming Collaborative Filtering Engine...")
-        initialized = hybrid_engine.collab_engine.load_and_fit()
+        initialized = hybrid_engine is not None and hybrid_engine.collab_engine.load_and_fit()
         if initialized:
             mapped_count = len(hybrid_engine.collab_engine.tmdb_to_movie)
             print(f"[+] Collaborative Filtering Engine ready with {mapped_count:,} mapped movies.")
         else:
             print("[-] MovieLens is unavailable; full readiness will report degraded.")
     except Exception:
-        hybrid_engine.collab_engine.is_initialized = False
+        if hybrid_engine is not None:
+            hybrid_engine.collab_engine.is_initialized = False
         print("[-] MovieLens initialization failed; full readiness will report degraded.")
     yield
     print("[*] Shutting down FilmMatch AI Backend...")

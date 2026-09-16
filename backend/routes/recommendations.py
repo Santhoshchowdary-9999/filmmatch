@@ -25,7 +25,17 @@ router = APIRouter(tags=["recommendations"])
 
 # Singleton services
 tmdb_service = TMDBService()
-hybrid_engine = HybridRecommendationEngine()
+try:
+    hybrid_engine = HybridRecommendationEngine()
+except Exception:
+    # Keep discovery and readiness reachable even when an ML resource is missing.
+    hybrid_engine = None
+
+
+def require_engine():
+    if hybrid_engine is None:
+        raise HTTPException(status_code=503, detail="Recommendation engine dependencies are unavailable.")
+    return hybrid_engine
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -41,11 +51,12 @@ async def health_check(response: Response):
         tmdb_ok = True
     except TMDBFailure as exc:
         tmdb_error = exc.error
-    collab = hybrid_engine.collab_engine
-    mapped_count = len(collab.tmdb_to_movie) if collab.is_initialized else 0
-    indexed_count = len(collab.movie_id_to_matrix_idx) if collab.is_initialized else 0
-    collab_ok = bool(collab.is_initialized and collab.item_user_matrix is not None and indexed_count)
-    sentiment_ok = getattr(hybrid_engine.sentiment_engine, "analyzer", None) is not None
+    collab = hybrid_engine.collab_engine if hybrid_engine is not None else None
+    initialized = collab is not None and collab.is_initialized
+    mapped_count = len(collab.tmdb_to_movie) if initialized else 0
+    indexed_count = len(collab.movie_id_to_matrix_idx) if initialized else 0
+    collab_ok = bool(initialized and collab.item_user_matrix is not None and indexed_count)
+    sentiment_ok = hybrid_engine is not None and getattr(hybrid_engine.sentiment_engine, "analyzer", None) is not None
     ready = tmdb_ok and collab_ok and sentiment_ok
     response.status_code = 200 if ready else 503
     return HealthResponse(
@@ -125,6 +136,7 @@ async def get_recommendations(req: RecommendationRequest):
     Generates 10 ranked hybrid movie recommendations based on Content Similarity,
     Audience Sentiment (NLTK VADER), and Collaborative Filtering (MovieLens).
     """
+    require_engine()
     source_movie: Optional[MovieMetadata] = None
 
     # 1. Resolve source movie
@@ -243,6 +255,7 @@ async def get_movie_detail(tmdb_id: int):
             detail=f"Movie with TMDB ID {tmdb_id} not found."
         )
 
+    require_engine()
     reviews = await tmdb_service.get_movie_reviews(tmdb_id)
     sentiment = hybrid_engine.sentiment_engine.analyze_movie_sentiment(tmdb_id, reviews, movie.overview)
 
