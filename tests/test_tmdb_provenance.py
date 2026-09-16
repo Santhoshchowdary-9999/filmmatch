@@ -80,10 +80,11 @@ async def test_demo_is_explicit_and_does_not_poison_live_cache(service, monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("demo", [False, True])
 @pytest.mark.parametrize("status", [401, 403, 404, 429, 500])
-async def test_http_failures_are_not_offline_success(service, monkeypatch, status):
+async def test_http_failures_are_not_offline_success(service, monkeypatch, status, demo):
     transport(monkeypatch, lambda request: httpx.Response(status, text="private upstream response"))
-    tokens = begin_request()
+    tokens = begin_request(demo=demo)
     try:
         with pytest.raises(TMDBFailure):
             await service.get_trending_movies()
@@ -188,3 +189,46 @@ async def test_request_provenance_is_isolated_across_tasks(service, monkeypatch)
     assert demo[1]["source"] == "offline_demo"
     assert live[1]["source"] == "tmdb"
     assert report()["components"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("demo", [False, True])
+@pytest.mark.parametrize("language, expected", [
+    (None, [7, 9, 3, 11]), ("all", [7, 9, 3, 11]),
+    ("te", [7, 3]), ("en", [9]), ("global", [9, 11]), ("hi", []),
+])
+async def test_trending_endpoint_order_filters_cache_and_refresh(service, monkeypatch, demo, language, expected):
+    # Incoming rank intentionally differs from ID, rating and poster-presence order.
+    rows = [
+        {**MOVIE, "id": 7, "original_language": "te", "vote_average": 1, "poster_path": None},
+        {**MOVIE, "id": 9, "original_language": "en", "vote_average": 10, "poster_path": "/fixture.jpg"},
+        {**MOVIE, "id": 3, "original_language": "te", "vote_average": 9, "poster_path": "/fixture.jpg"},
+        {**MOVIE, "id": 11, "original_language": "ko", "vote_average": 8},
+    ]
+    calls = []
+    def handler(request):
+        calls.append(request)
+        assert request.url.path == "/3/trending/movie/day"
+        assert dict(request.url.params) == {"page": "2", "api_key": "test-only-key"}
+        return httpx.Response(200, json={"results": rows})
+    transport(monkeypatch, handler)
+    for refresh, cache in [(False, "fresh"), (False, "cached"), (True, "fresh")]:
+        movies, metadata = await observed(service.get_trending_movies(language=language, page=2, force_refresh=refresh), demo=demo)
+        assert [m.tmdb_id for m in movies] == expected
+        assert metadata["source"] == "tmdb" and metadata["cache"] == cache
+        assert metadata["status"] == ("ok" if expected else "empty")
+        assert metadata["errors"] == []
+        assert [e["endpoint"] for e in metadata["components"]] == ["/trending/movie/day"]
+    assert len(calls) == 2
+    assert all(entry[1] == 600.0 for entry in service._cache.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("demo", [False, True])
+async def test_trending_requires_tmdb_even_in_demo_mode(service, monkeypatch, demo):
+    service.api_key = ""
+    def forbidden(request):
+        pytest.fail("Missing credentials must not issue an upstream request")
+    transport(monkeypatch, forbidden)
+    with pytest.raises(TMDBFailure, match="not configured"):
+        await observed(service.get_trending_movies(), demo=demo)

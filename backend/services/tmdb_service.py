@@ -1013,61 +1013,22 @@ class TMDBService:
         ]
         return items
 
-    async def _get_multiregional_mix(self, sort_by: str = "popularity.desc", page: int = 1) -> list[MovieSearchItem]:
-        record(endpoint="demo/trending", source="offline_demo", cache="none", fetched_at=None)
-
-        # Existing demo ranking; not current TMDB trending.
-        def compute_trending_score(m: MovieMetadata) -> float:
-            try:
-                yr = int(m.release_date[:4]) if m.release_date else 2000
-            except Exception:
-                yr = 2000
-            recency_score = max(0.0, 1.0 - ((2024 - yr) * 0.10))
-            vote_count_score = min(1.0, (m.vote_count or 100) / 1500.0)
-            vote_avg_score = min(1.0, (m.vote_average or 5.0) / 10.0)
-            has_poster_bonus = 0.05 if (m.poster_url and m.poster_url.strip()) else 0.0
-            return (0.50 * recency_score) + (0.25 * vote_count_score) + (0.25 * vote_avg_score) + has_poster_bonus
-
-        sorted_catalog = sorted(OFFLINE_CATALOG, key=compute_trending_score, reverse=True)
-        items = [
-            MovieSearchItem(
-                tmdb_id=m.tmdb_id,
-                title=m.title,
-                release_date=m.release_date,
-                original_language=m.original_language,
-                poster_url=m.poster_url,
-                backdrop_url=m.backdrop_url,
-                vote_average=m.vote_average,
-                overview=m.overview,
-                genres=m.genres
-            )
-            for m in sorted_catalog
-        ]
-        return items
-
     async def get_trending_movies(
         self, language: Optional[str] = None, page: int = 1, force_refresh: bool = False
     ) -> list[MovieSearchItem]:
+        """Return official daily trending, never demo or popularity rankings.
+
+        Language filters select from the requested TMDB trending page, preserving
+        relative rank. Sparse/empty selections are not backfilled from discovery.
+        The shared request helper retains Phase 1 cache, provenance and failures.
         """
-        Fetches trending films dynamically from TMDB's official /trending/movie/day endpoint.
-        Preserves official TMDB ranking and canonical metadata.
-        Caches results for 10 minutes to prevent excessive TMDB requests while refreshing periodically.
-        """
-        if is_demo():
-            if language and language != "all":
-                return await self.discover_movies(language=language, page=page)
-            return await self._get_multiregional_mix(page=page)
-        if language and language != "all":
-            # Keep regional popularity semantics; provenance identifies the endpoint.
-            params = {"sort_by": "popularity.desc", "include_adult": "false", "vote_count.gte": "5", "page": page}
-            if language == "global":
-                params["without_original_language"] = "te,hi,ta,ml,kn"
-            else:
-                params["with_original_language"] = language
-            data = await self._request("/discover/movie", params, force_refresh=force_refresh)
-            return self._map_raw_to_search_items(data["results"])
         data = await self._request("/trending/movie/day", {"page": page}, force_refresh=force_refresh, ttl=600.0)
-        return self._map_raw_to_search_items(data["results"], preserve_order=True)
+        items = self._map_raw_to_search_items(data["results"], preserve_order=True)
+        if language == "global":
+            return [m for m in items if m.original_language not in REGIONAL_LANGUAGES]
+        if language and language != "all":
+            return [m for m in items if m.original_language == language]
+        return items
 
     async def get_movie_details(self, tmdb_id: int) -> Optional[MovieMetadata]:
         if is_demo():
