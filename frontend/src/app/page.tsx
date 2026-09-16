@@ -52,6 +52,8 @@ export default function HomePage() {
   const [isLoadingMoreTrending, setIsLoadingMoreTrending] = useState<boolean>(false);
   const [lastTrendingUpdated, setLastTrendingUpdated] = useState<string>("");
   const [trendingStatus, setTrendingStatus] = useState("");
+  const lastSuccessfulTrendingStatus = useRef("");
+  const trendingRequestId = useRef(0);
   const [exploreStatus, setExploreStatus] = useState("");
   const recRequestId = useRef(0);
 
@@ -64,6 +66,7 @@ export default function HomePage() {
 
   // 1. Fetch Dynamic Trending Movies from /api/trending
   const loadTrending = async (forceRefresh: boolean = false) => {
+    const requestId = ++trendingRequestId.current;
     if (forceRefresh) {
       setIsRefreshingTrending(true);
     } else {
@@ -73,6 +76,7 @@ export default function HomePage() {
     try {
       const endpoint = forceRefresh ? "/api/trending?refresh=true" : "/api/trending";
       const data = await fetchFromApi<MovieSearchResponse>(endpoint);
+      if (requestId !== trendingRequestId.current) return;
       if (Array.isArray(data.results)) {
         const mapped: CatalogMovie[] = data.results.map((item: MovieSearchItem) => {
           // Construct poster URL using canonical poster_path
@@ -105,16 +109,22 @@ export default function HomePage() {
         });
         // Render EXACTLY the movies returned by /api/trending in canonical TMDB trending order
         setTrendingMovies(mapped);
-        setTrendingStatus(describeProvenance(data.provenance));
+        lastSuccessfulTrendingStatus.current = describeProvenance(data.provenance);
+        setTrendingStatus(lastSuccessfulTrendingStatus.current);
         setLastTrendingUpdated(data.provenance.fetched_at ? new Date(data.provenance.fetched_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
       } else {
         throw new Error("The backend returned invalid trending results.");
       }
     } catch (err) {
-      setTrendingStatus(previous => `Refresh failed: ${requestError(err)}${previous ? ` · Retained results are not refreshed. Previous source: ${previous}` : " · No results available."}`);
+      if (requestId === trendingRequestId.current) {
+        const previous = lastSuccessfulTrendingStatus.current;
+        setTrendingStatus(`Refresh failed: ${requestError(err)}${previous ? ` · Retained results are not refreshed. Previous source: ${previous}` : " · No results available."}`);
+      }
     } finally {
-      setIsLoadingTrending(false);
-      setIsRefreshingTrending(false);
+      if (requestId === trendingRequestId.current) {
+        setIsLoadingTrending(false);
+        setIsRefreshingTrending(false);
+      }
     }
   };
 

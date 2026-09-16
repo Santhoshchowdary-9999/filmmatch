@@ -7,6 +7,18 @@ export class ApiError extends Error {
   }
 }
 
+function validProvenance(value: unknown): value is Provenance {
+  if (!value || typeof value !== "object") return false;
+  const p = value as Provenance;
+  return ["ok", "empty", "degraded", "failed"].includes(p.status)
+    && ["tmdb", "offline_demo", "mixed", "none"].includes(p.source)
+    && ["fresh", "cached", "stale", "mixed", "none"].includes(p.cache)
+    && typeof p.stale === "boolean"
+    && (p.fetched_at === null || (typeof p.fetched_at === "string" && !Number.isNaN(Date.parse(p.fetched_at))))
+    && Array.isArray(p.errors) && p.errors.every(e => e && typeof e.message === "string" && typeof e.code === "string")
+    && Array.isArray(p.components);
+}
+
 export async function fetchFromApi<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -20,8 +32,11 @@ export async function fetchFromApi<T>(endpoint: string, options: RequestInit = {
       const message = typeof data?.detail === "string" ? data.detail : data?.detail?.message;
       throw new ApiError(message || `Request failed (HTTP ${response.status}).`, response.status, data?.provenance);
     }
-    if (!data || !data.provenance) {
-      throw new ApiError("The backend returned data without provenance. Deploy the matching backend version.", response.status);
+    if (!data || !validProvenance(data.provenance)) {
+      throw new ApiError("The backend returned data without valid provenance. Deploy the matching backend version.", response.status);
+    }
+    if (data.provenance.status === "failed") {
+      throw new ApiError(data.provenance.errors[0]?.message || "The backend reported a failed request.", response.status, data.provenance);
     }
     return data as T;
   } catch (error) {

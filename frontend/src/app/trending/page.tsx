@@ -38,6 +38,8 @@ export default function TrendingPage() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [lastTrendingUpdated, setLastTrendingUpdated] = useState<string>("");
   const [trendingStatus, setTrendingStatus] = useState("");
+  const lastSuccessfulTrendingStatus = useRef("");
+  const trendingRequestId = useRef(0);
   const recRequestId = useRef(0);
   const [recommendationData, setRecommendationData] = useState<RecommendationResponse | null>(null);
   const [isLoadingRec, setIsLoadingRec] = useState(false);
@@ -49,6 +51,7 @@ export default function TrendingPage() {
   const recSectionRef = useRef<HTMLDivElement>(null);
 
   const loadTrending = async (forceRefresh: boolean = false) => {
+    const requestId = ++trendingRequestId.current;
     if (forceRefresh) {
       setIsRefreshingTrending(true);
     } else {
@@ -58,6 +61,7 @@ export default function TrendingPage() {
     try {
       const endpoint = forceRefresh ? "/api/trending?refresh=true" : "/api/trending";
       const data = await fetchFromApi<MovieSearchResponse>(endpoint);
+      if (requestId !== trendingRequestId.current) return;
       if (Array.isArray(data.results)) {
         const mapped: CatalogMovie[] = data.results.map((item: MovieSearchItem) => {
           const posterUrl = item.poster_path
@@ -89,16 +93,22 @@ export default function TrendingPage() {
         });
         // Render EXACTLY the movies returned by /api/trending in canonical TMDB trending order
         setAllTrendingMovies(mapped);
-        setTrendingStatus(describeProvenance(data.provenance));
+        lastSuccessfulTrendingStatus.current = describeProvenance(data.provenance);
+        setTrendingStatus(lastSuccessfulTrendingStatus.current);
         setLastTrendingUpdated(data.provenance.fetched_at ? new Date(data.provenance.fetched_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
       } else {
         throw new Error("The backend returned invalid trending results.");
       }
     } catch (err) {
-      setTrendingStatus(previous => `Refresh failed: ${requestError(err)}${previous ? ` · Retained results are not refreshed. Previous source: ${previous}` : " · No results available."}`);
+      if (requestId === trendingRequestId.current) {
+        const previous = lastSuccessfulTrendingStatus.current;
+        setTrendingStatus(`Refresh failed: ${requestError(err)}${previous ? ` · Retained results are not refreshed. Previous source: ${previous}` : " · No results available."}`);
+      }
     } finally {
-      setIsLoadingTrending(false);
-      setIsRefreshingTrending(false);
+      if (requestId === trendingRequestId.current) {
+        setIsLoadingTrending(false);
+        setIsRefreshingTrending(false);
+      }
     }
   };
 
