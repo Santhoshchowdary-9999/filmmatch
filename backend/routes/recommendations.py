@@ -29,7 +29,39 @@ hybrid_engine = HybridRecommendationEngine()
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check
+async def health_check(response: Response):
+    """Full readiness, not just process liveness. PostgreSQL is not implemented."""
+    import time
+    from backend.services.provenance import timestamp
+    configured = bool(tmdb_service.api_key or tmdb_service.read_token)
+    tmdb_ok = False
+    tmdb_error = None
+    try:
+        await tmdb_service._request("/configuration", force_refresh=True, allow_stale=False)
+        tmdb_ok = True
+    except TMDBFailure as exc:
+        tmdb_error = exc.error
+    collab = hybrid_engine.collab_engine
+    mapped_count = len(collab.tmdb_to_movie) if collab.is_initialized else 0
+    indexed_count = len(collab.movie_id_to_matrix_idx) if collab.is_initialized else 0
+    collab_ok = bool(collab.is_initialized and collab.item_user_matrix is not None and indexed_count)
+    sentiment_ok = getattr(hybrid_engine.sentiment_engine, "analyzer", None) is not None
+    ready = tmdb_ok and collab_ok and sentiment_ok
+    response.status_code = 200 if ready else 503
+    return HealthResponse(
+        status="healthy" if ready else "degraded", ready=ready,
+        version=settings.VERSION, tmdb_configured=configured,
+        movielens_mapped_count=mapped_count, database_target="PostgreSQL",
+        dependencies={
+            "tmdb": {"status": "available" if tmdb_ok else "unavailable", "configured": configured,
+                     "checked_at": timestamp(time.time()), "error": tmdb_error},
+            "movielens": {"status": "ready" if collab_ok else "unavailable", "mapped_count": mapped_count,
+                          "indexed_count": indexed_count},
+            "sentiment": {"status": "ready" if sentiment_ok else "unavailable"},
+            "database": {"status": "not_implemented", "required": False},
+        },
+        provenance=report(failed=not ready),
+    )
 
 
 @router.get("/search", response_model=MovieSearchResponse)
@@ -42,7 +74,8 @@ async def search_movies(
     return MovieSearchResponse(
         query=q,
         results=results,
-        total_results=len(results)
+        total_results=len(results),
+        provenance=report(empty=not results),
     )
 
 
@@ -65,7 +98,8 @@ async def discover_movies(
     return MovieSearchResponse(
         query=language or "all",
         results=results,
-        total_results=len(results)
+        total_results=len(results),
+        provenance=report(empty=not results),
     )
 
 
@@ -80,7 +114,8 @@ async def get_trending(
     return MovieSearchResponse(
         query="trending",
         results=results,
-        total_results=len(results)
+        total_results=len(results),
+        provenance=report(empty=not results),
     )
 
 
@@ -95,6 +130,8 @@ async def get_recommendations(req: RecommendationRequest):
     # 1. Resolve source movie
     if req.tmdb_id:
         source_movie = await tmdb_service.get_movie_details(req.tmdb_id)
+        if source_movie is None:
+            raise HTTPException(status_code=404, detail="The selected movie was not found.")
 
     if not source_movie:
         # Search by query
@@ -116,13 +153,7 @@ async def get_recommendations(req: RecommendationRequest):
 
     # 2. Fetch candidate pool
     candidates = await tmdb_service.get_candidate_pool(source_movie)
-    if not candidates:
-        # Fallback to search results if candidate discovery is empty
-        fallback_items = await tmdb_service.search_movies(query=source_movie.genres[0] if source_movie.genres else "Action")
-        cand_ids = [m.tmdb_id for m in fallback_items if m.tmdb_id != source_movie.tmdb_id][:15]
-        import asyncio
-        candidates = [c for c in await asyncio.gather(*[tmdb_service.get_movie_details(cid) for cid in cand_ids]) if c]
-
+    # Empty related-film results are not a reason to substitute unrelated titles.
     if not candidates:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -185,7 +216,20 @@ async def get_recommendations(req: RecommendationRequest):
         source_movie=source_schema,
         recommendations=rec_schemas,
         applied_weights=payload.applied_weights,
-        execution_time_ms=payload.execution_time_ms
+        execution_time_ms=payload.execution_time_ms,
+        provenance=report(empty=not rec_schemas),
+        signal_provenance={
+            "content": "derived from the movie metadata described in provenance",
+            "collaborative": {"source": "local_movielens", "freshness": "local snapshot; not live",
+                              "initialized": hybrid_engine.collab_engine.is_initialized},
+            "sentiment": {
+                str(r.tmdb_id): {
+                    "source": "rating_or_overview_fallback" if hybrid_engine.sentiment_engine.cache[r.tmdb_id].is_fallback else "audience_reviews",
+                    "review_count": hybrid_engine.sentiment_engine.cache[r.tmdb_id].review_count,
+                    "freshness": "derived or engine-cached; calculation timestamp unavailable",
+                } for r in payload.recommendations if r.tmdb_id in hybrid_engine.sentiment_engine.cache
+            },
+        },
     )
 
 
@@ -205,5 +249,11 @@ async def get_movie_detail(tmdb_id: int):
     return {
         "movie": movie,
         "sentiment": sentiment,
-        "reviews_count": len(reviews)
+        "reviews_count": len(reviews),
+        "provenance": report(),
+        "signal_provenance": {"sentiment": {
+            "source": "rating_or_overview_fallback" if sentiment.is_fallback else "audience_reviews",
+            "review_count": sentiment.review_count,
+            "freshness": "derived or engine-cached; calculation timestamp unavailable",
+        }},
     }

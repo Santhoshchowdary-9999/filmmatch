@@ -1,3 +1,20 @@
+export interface Provenance {
+  status: "ok" | "empty" | "degraded" | "failed";
+  source: "tmdb" | "offline_demo" | "mixed" | "none";
+  cache: "fresh" | "cached" | "stale" | "mixed" | "none";
+  fetched_at: string | null;
+  stale: boolean;
+  errors: { code: string; message: string; upstream_status?: number | null }[];
+  components: { endpoint: string; source: string; cache: string; fetched_at?: string | null }[];
+}
+
+export interface MovieSearchResponse {
+  query: string;
+  results: MovieSearchItem[];
+  total_results: number;
+  provenance: Provenance;
+}
+
 export interface ScoreBreakdown {
   content_similarity: number;
   sentiment_score: number;
@@ -33,6 +50,12 @@ export interface SourceMovie {
 }
 
 export interface RecommendationResponse {
+  provenance: Provenance;
+  signal_provenance?: {
+    content: string;
+    collaborative: { source: string; freshness: string; initialized: boolean };
+    sentiment: Record<string, { source: string; review_count: number; freshness: string }>;
+  };
   source_movie: SourceMovie;
   recommendations: MovieRecommendation[];
   applied_weights: {
