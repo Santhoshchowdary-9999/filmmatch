@@ -10,22 +10,7 @@ import { Footer } from "@/components/Footer";
 import { useRouter } from "next/navigation";
 import { CatalogMovie, MovieRecommendation, RecommendationResponse } from "@/types";
 
-async function fetchFromApi(endpoint: string, options?: RequestInit) {
-  try {
-    const res = await fetch(endpoint, options);
-    if (res.ok) return await res.json();
-  } catch (e) {}
-
-  const ports = [8000, 8001];
-  for (const port of ports) {
-    try {
-      const url = `http://127.0.0.1:${port}${endpoint}`;
-      const res = await fetch(url, options);
-      if (res.ok) return await res.json();
-    } catch (e) {}
-  }
-  throw new Error(`Failed to connect to backend at ${endpoint}`);
-}
+import { fetchFromApi, requestError } from "@/utils/api";
 
 export default function HowItWorksPage() {
   const router = useRouter();
@@ -36,8 +21,11 @@ export default function HowItWorksPage() {
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const recSectionRef = useRef<HTMLDivElement>(null);
+  const recRequestId = useRef(0);
 
   const handleGetRecommendations = async (tmdbId: number, query: string) => {
+    const requestId = ++recRequestId.current;
+    setRecommendationData(null);
     setIsLoadingRec(true);
     setError(null);
 
@@ -58,12 +46,11 @@ export default function HowItWorksPage() {
         body: JSON.stringify(payload),
       });
 
-      setRecommendationData(data);
-    } catch (err: any) {
-      console.warn("API Error:", err.message);
-      setError("Unable to generate hybrid recommendations right now. Please try again.");
+      if (requestId === recRequestId.current) setRecommendationData(data);
+    } catch (err) {
+      if (requestId === recRequestId.current) setError(requestError(err));
     } finally {
-      setIsLoadingRec(false);
+      if (requestId === recRequestId.current) setIsLoadingRec(false);
     }
   };
 
@@ -84,6 +71,7 @@ export default function HowItWorksPage() {
 
       <main className="flex-1">
         <div ref={recSectionRef} className="scroll-mt-24 sm:scroll-mt-28">
+          {error && <p role="alert" className="max-w-3xl mx-auto my-8 p-4 rounded-2xl bg-red-500/10 border border-red-500/30 text-red-300 text-sm">{error}</p>}
           {recommendationData && !isLoadingRec && (
             <RecommendationSection
               data={recommendationData}

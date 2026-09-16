@@ -2,8 +2,8 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { Search, Loader2, X, Sparkles, Star, Film, HelpCircle } from "lucide-react";
-import { MovieSearchItem } from "@/types";
-import { MOCK_CATALOG } from "@/data/mock_movies";
+import { MovieSearchItem, MovieSearchResponse } from "@/types";
+import { fetchFromApi, describeProvenance, requestError } from "@/utils/api";
 import { MoviePoster } from "./MoviePoster";
 
 interface SearchBarProps {
@@ -23,6 +23,8 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState<number>(-1);
+  const [searchStatus, setSearchStatus] = useState("");
+  const [searchError, setSearchError] = useState<string | null>(null);
 
   const internalRef = useRef<HTMLInputElement>(null);
   const inputRef = externalRef || internalRef;
@@ -55,77 +57,40 @@ export const SearchBar: React.FC<SearchBarProps> = ({
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, [inputRef]);
 
-  // Debounced Search against real backend API
+  // Abort obsolete searches; a failed request is not an empty search result.
   useEffect(() => {
+    const controller = new AbortController();
+    setResults([]);
+    setSelectedIndex(-1);
+    setSearchError(null);
+    setSearchStatus("");
+    setHasSearched(false);
+    setIsOpen(false);
     if (!query.trim()) {
-      setResults([]);
       setIsLoading(false);
-      setIsOpen(false);
-      setHasSearched(false);
       return;
     }
-
+    setIsLoading(true);
     const timer = setTimeout(async () => {
-      setIsLoading(true);
-      setHasSearched(true);
       try {
-        const response = await fetch(`/api/search?q=${encodeURIComponent(query.trim())}`);
-        if (response.ok) {
-          const data = await response.json();
-          const items: MovieSearchItem[] = data.results || [];
-          setResults(items);
-          setIsOpen(true);
-        } else {
-          // If relative proxy fails, try direct backend port fallback
-          tryDirectBackendSearch(query.trim());
-        }
+        const data = await fetchFromApi<MovieSearchResponse>(`/api/search?q=${encodeURIComponent(query.trim())}`, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        if (!Array.isArray(data.results)) throw new Error("The backend returned invalid search results.");
+        setResults(data.results);
+        setSearchStatus(describeProvenance(data.provenance));
+        setHasSearched(true);
+        setIsOpen(true);
       } catch (err) {
-        tryDirectBackendSearch(query.trim());
+        if (!controller.signal.aborted) {
+          setSearchError(requestError(err));
+          setIsOpen(true);
+        }
       } finally {
-        setIsLoading(false);
+        if (!controller.signal.aborted) setIsLoading(false);
       }
     }, 250);
-
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); controller.abort(); };
   }, [query]);
-
-  const tryDirectBackendSearch = async (q: string) => {
-    const ports = [8000, 8001];
-    for (const port of ports) {
-      try {
-        const res = await fetch(`http://127.0.0.1:${port}/api/search?q=${encodeURIComponent(q)}`);
-        if (res.ok) {
-          const data = await res.json();
-          const items: MovieSearchItem[] = data.results || [];
-          setResults(items);
-          setIsOpen(true);
-          return;
-        }
-      } catch (e) {
-        // try next port
-      }
-    }
-    // Fallback search in catalog if backend completely unreachable
-    fallbackMockSearch(q);
-  };
-
-  const fallbackMockSearch = (q: string) => {
-    const qLower = q.toLowerCase();
-    const filtered: MovieSearchItem[] = MOCK_CATALOG
-      .filter(m => m.title.toLowerCase().includes(qLower) || m.genres.some(g => g.toLowerCase().includes(qLower)))
-      .map(m => ({
-        tmdb_id: m.tmdb_id,
-        title: m.title,
-        release_date: m.year,
-        original_language: m.languageCode,
-        poster_url: m.poster,
-        vote_average: m.rating,
-        overview: m.overview,
-        genres: m.genres,
-      }));
-    setResults(filtered);
-    setIsOpen(true);
-  };
 
   // Click outside listener
   useEffect(() => {
@@ -264,10 +229,13 @@ export const SearchBar: React.FC<SearchBarProps> = ({
           ref={dropdownRef}
           className="absolute left-0 right-0 mt-2 rounded-2xl glass-dropdown shadow-2xl z-50 overflow-hidden max-h-[400px] overflow-y-auto"
         >
-          {results.length > 0 ? (
+          {searchStatus && <p role="status" className="px-3 py-2 text-xs text-gray-400">{searchStatus}</p>}
+          {searchError ? (
+            <p role="alert" className="p-6 text-sm text-red-300">Search unavailable: {searchError}</p>
+          ) : results.length > 0 ? (
             <div className="p-2 space-y-1">
               <div className="px-3 py-1.5 text-[11px] font-bold text-gray-400 uppercase tracking-wider flex items-center justify-between">
-                <span>TMDB Suggestions</span>
+                <span>Movie Suggestions</span>
                 <span className="text-gray-500 font-normal">Use ↑↓ keys & Enter</span>
               </div>
               {results.map((item, index) => {
