@@ -12,38 +12,13 @@ import { RecommendationSection } from "@/components/RecommendationSection";
 import { MovieModal } from "@/components/MovieModal";
 import { Footer } from "@/components/Footer";
 
-import { CatalogMovie, MovieRecommendation, MovieSearchItem, RecommendationResponse } from "@/types";
-import { MOCK_CATALOG } from "@/data/mock_movies";
+import { CatalogMovie, MovieRecommendation, MovieSearchItem, MovieSearchResponse, RecommendationResponse } from "@/types";
+import { fetchFromApi, describeProvenance, requestError } from "@/utils/api";
 import { getTmdbPosterUrl, getTmdbBackdropUrl } from "@/utils/image";
 
 // How many movies to show initially and how many to add on each "Load More"
 const INITIAL_DISPLAY_COUNT = 12;
 const LOAD_MORE_STEP = 12;
-
-// Resilient API Fetch Helper across proxy, port 8000, and port 8001
-async function fetchFromApi(endpoint: string, options?: RequestInit) {
-  // 1. Try relative proxy
-  try {
-    const res = await fetch(endpoint, options);
-    if (res.ok) return await res.json();
-  } catch (e) {
-    // try direct ports
-  }
-
-  // 2. Try direct ports (8000, 8001)
-  const ports = [8000, 8001];
-  for (const port of ports) {
-    try {
-      const url = `http://127.0.0.1:${port}${endpoint}`;
-      const res = await fetch(url, options);
-      if (res.ok) return await res.json();
-    } catch (e) {
-      // try next
-    }
-  }
-
-  throw new Error(`Failed to connect to backend at ${endpoint}`);
-}
 
 /** Sort movies: prioritize those with posters while preserving incoming backend ranking */
 function sortByQuality(movies: CatalogMovie[]): CatalogMovie[] {
@@ -76,6 +51,9 @@ export default function HomePage() {
   const [isRefreshingTrending, setIsRefreshingTrending] = useState<boolean>(false);
   const [isLoadingMoreTrending, setIsLoadingMoreTrending] = useState<boolean>(false);
   const [lastTrendingUpdated, setLastTrendingUpdated] = useState<string>("");
+  const [trendingStatus, setTrendingStatus] = useState("");
+  const [exploreStatus, setExploreStatus] = useState("");
+  const recRequestId = useRef(0);
 
   const [modalMovie, setModalMovie] = useState<CatalogMovie | MovieRecommendation | null>(null);
 
@@ -94,8 +72,8 @@ export default function HomePage() {
     setDisplayCountTrending(INITIAL_DISPLAY_COUNT);
     try {
       const endpoint = forceRefresh ? "/api/trending?refresh=true" : "/api/trending";
-      const data = await fetchFromApi(endpoint);
-      if (data.results && data.results.length > 0) {
+      const data = await fetchFromApi<MovieSearchResponse>(endpoint);
+      if (Array.isArray(data.results)) {
         const mapped: CatalogMovie[] = data.results.map((item: MovieSearchItem) => {
           // Construct poster URL using canonical poster_path
           const posterUrl = item.poster_path
@@ -127,15 +105,13 @@ export default function HomePage() {
         });
         // Render EXACTLY the movies returned by /api/trending in canonical TMDB trending order
         setTrendingMovies(mapped);
-        setLastTrendingUpdated(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+        setTrendingStatus(describeProvenance(data.provenance));
+        setLastTrendingUpdated(data.provenance.fetched_at ? new Date(data.provenance.fetched_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
       } else {
-        const fallback = MOCK_CATALOG.filter((m) => m.isTrending);
-        setTrendingMovies(fallback.length > 0 ? fallback : MOCK_CATALOG);
+        throw new Error("The backend returned invalid trending results.");
       }
     } catch (err) {
-      console.warn("Using fallback trending movies:", err);
-      const fallback = MOCK_CATALOG.filter((m) => m.isTrending);
-      setTrendingMovies(fallback.length > 0 ? fallback : MOCK_CATALOG);
+      setTrendingStatus(previous => `Refresh failed: ${requestError(err)}${previous ? ` · Retained results are not refreshed. Previous source: ${previous}` : " · No results available."}`);
     } finally {
       setIsLoadingTrending(false);
       setIsRefreshingTrending(false);
@@ -148,12 +124,16 @@ export default function HomePage() {
 
   // 2. Fetch Dynamic Catalog whenever selectedLanguage changes
   useEffect(() => {
+    let active = true;
     async function loadCatalog() {
       setIsExploreLoading(true);
+      setExploreMovies([]);
+      setExploreStatus("");
       setDisplayCountExplore(INITIAL_DISPLAY_COUNT);
       try {
-        const data = await fetchFromApi(`/api/discover?language=${selectedLanguage}`);
-        if (data.results && data.results.length > 0) {
+        const data = await fetchFromApi<MovieSearchResponse>(`/api/discover?language=${selectedLanguage}`);
+        if (!active) return;
+        if (Array.isArray(data.results)) {
           const mapped: CatalogMovie[] = data.results.map((item: MovieSearchItem) => ({
             id: item.tmdb_id,
             tmdb_id: item.tmdb_id,
@@ -171,28 +151,20 @@ export default function HomePage() {
             sentiment: "Audience Rated",
           }));
           setExploreMovies(sortByQuality(mapped));
+          setExploreStatus(describeProvenance(data.provenance));
         } else {
-          fallbackLocalFilter(selectedLanguage);
+          throw new Error("The backend returned invalid discovery results.");
         }
       } catch (err) {
-        console.warn("Using fallback local catalog:", err);
-        fallbackLocalFilter(selectedLanguage);
+        if (active) setExploreStatus(`Discovery unavailable: ${requestError(err)}`);
       } finally {
-        setIsExploreLoading(false);
+        if (active) setIsExploreLoading(false);
       }
     }
 
     loadCatalog();
+    return () => { active = false; };
   }, [selectedLanguage]);
-
-  const fallbackLocalFilter = (lang: string) => {
-    const filtered = MOCK_CATALOG.filter((m) => {
-      if (lang === "all") return true;
-      if (lang === "global") return !["te", "hi", "ta", "ml", "kn"].includes(m.languageCode);
-      return m.languageCode === lang;
-    });
-    setExploreMovies(sortByQuality(filtered));
-  };
 
   const handleLoadMoreTrending = () => {
     setIsLoadingMoreTrending(true);
@@ -212,6 +184,8 @@ export default function HomePage() {
 
   // 3. Trigger Recommendation Request
   const handleGetRecommendations = async (tmdbId: number, query: string) => {
+    const requestId = ++recRequestId.current;
+    setRecommendationData(null);
     setIsLoading(true);
     setLoadingMovieId(tmdbId > 0 ? tmdbId : null);
     setLastQuery({ id: tmdbId, title: query });
@@ -235,88 +209,15 @@ export default function HomePage() {
         body: JSON.stringify(payload),
       });
 
-      setRecommendationData(data);
-    } catch (err: any) {
-      console.warn("Backend API error, attempting fallback synthesis:", err.message);
-      try {
-        generateMockRecommendations(query, tmdbId);
-      } catch (fallbackErr) {
-        setError("Unable to generate recommendations right now. Please try again.");
-      }
+      if (requestId === recRequestId.current) setRecommendationData(data);
+    } catch (err) {
+      if (requestId === recRequestId.current) setError(requestError(err));
     } finally {
-      setIsLoading(false);
-      setLoadingMovieId(null);
-    }
-  };
-
-  // Mock Recommendation Fallback (Ensures complete UI resilience)
-  const generateMockRecommendations = (query: string, tmdbId: number) => {
-    const source = MOCK_CATALOG.find(m => m.tmdb_id === tmdbId || m.title.toLowerCase().includes(query.toLowerCase())) || MOCK_CATALOG[0];
-
-    const candidates = MOCK_CATALOG.filter(m => m.tmdb_id !== source.tmdb_id);
-
-    const recs: MovieRecommendation[] = candidates.map((m, idx) => {
-      const isSharedLang = m.languageCode === source.languageCode;
-      const isSharedGenre = m.genres.some(g => source.genres.includes(g));
-      const cScore = isSharedLang && isSharedGenre ? 0.88 - (idx * 0.03) : 0.65 - (idx * 0.04);
-      const sScore = 0.85 + (idx % 3) * 0.04;
-      const cbScore = idx < 6 ? 0.80 - (idx * 0.05) : null;
-      const isCold = cbScore === null;
-
-      const finalScore = isCold
-        ? (cScore * 0.65) + (sScore * 0.35)
-        : (cScore * 0.50) + (sScore * 0.20) + ((cbScore || 0) * 0.30);
-
-      const matchPct = Math.round(finalScore * 100);
-
-      let explanation = `Strong affinity with '${source.title}' sharing ${m.genres.slice(0, 2).join(" and ")} themes.`;
-      if (isCold) {
-        explanation = `New Release / Content + Audience Match: ${Math.round(sScore * 100)}% audience approval.`;
+      if (requestId === recRequestId.current) {
+        setIsLoading(false);
+        setLoadingMovieId(null);
       }
-
-      return {
-        tmdb_id: m.tmdb_id,
-        title: m.title,
-        overview: m.overview,
-        release_date: m.year,
-        original_language: m.languageCode,
-        poster_url: m.poster,
-        backdrop_url: m.backdrop,
-        genres: m.genres,
-        vote_average: m.rating,
-        vote_count: 1500,
-        hybrid_score: Math.round(finalScore * 1000) / 10,
-        match_percentage: matchPct,
-        score_breakdown: {
-          content_similarity: Math.round(cScore * 100) / 100,
-          sentiment_score: Math.round(sScore * 100) / 100,
-          collaborative_score: cbScore !== null ? Math.round(cbScore * 100) / 100 : null,
-          is_cold_start: isCold,
-          explanation: explanation,
-        },
-      };
-    });
-
-    recs.sort((a, b) => b.hybrid_score - a.hybrid_score);
-
-    setRecommendationData({
-      source_movie: {
-        tmdb_id: source.tmdb_id,
-        title: source.title,
-        release_date: source.year,
-        original_language: source.languageCode,
-        poster_url: source.poster,
-        genres: source.genres,
-        overview: source.overview,
-      },
-      recommendations: recs.slice(0, 10),
-      applied_weights: {
-        content: 0.50,
-        sentiment: 0.20,
-        collaborative: 0.30,
-      },
-      execution_time_ms: 184.5,
-    });
+    }
   };
 
   const visibleTrendingMovies = trendingMovies.slice(0, displayCountTrending);
@@ -389,9 +290,9 @@ export default function HomePage() {
         <section id="trending-section" ref={trendingSectionRef} className="scroll-mt-24 sm:scroll-mt-28 py-12 sm:py-16 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <SectionHeader
             title="Trending Cinema"
-            subtitle="Live TMDB official daily trending movies with real-time audience acclaim"
+            subtitle={trendingStatus || "TMDB daily trending — awaiting data"}
             icon={Flame}
-            badgeText="TMDB Daily"
+            badgeText="Daily discovery"
             action={
               <div className="flex items-center space-x-3">
                 {lastTrendingUpdated && (
@@ -470,7 +371,7 @@ export default function HomePage() {
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
             <SectionHeader
               title="Explore Cinema by Language"
-              subtitle="Browse regional cinema and international masterworks dynamically from TMDB"
+              subtitle={exploreStatus || "Browse regional and international cinema — awaiting data"}
               icon={Compass}
               badgeText="Broad Discovery"
             />

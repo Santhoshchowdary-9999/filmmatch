@@ -5,6 +5,7 @@ import { Sparkles, ArrowLeft, Clock, Film, Layers, MessageSquareText, Users, Awa
 import { RecommendationResponse, MovieRecommendation } from "@/types";
 import { MovieCard } from "./MovieCard";
 import { MoviePoster } from "./MoviePoster";
+import { describeProvenance } from "@/utils/api";
 
 interface RecommendationSectionProps {
   data: RecommendationResponse;
@@ -51,6 +52,14 @@ export const RecommendationSection: React.FC<RecommendationSectionProps> = ({
             </div>
           </div>
         </div>
+
+        <p role="status" className="text-xs text-gray-400 mb-4">
+          Movie metadata and reviews: {describeProvenance(data.provenance)}.
+          {" "}Scores are computed, not live measurements. Community data uses the local MovieLens snapshot.
+          {data.signal_provenance && Object.values(data.signal_provenance.sentiment).some(s => s.source === "rating_or_overview_fallback")
+            ? " Some audience scores use rating/overview fallback, not audience reviews." : ""}
+          {" "}Sentiment may be engine-cached; its calculation freshness is unavailable.
+        </p>
 
         {/* Source Seed Film Spotlight Card */}
         <div className="mb-12 p-6 sm:p-8 rounded-3xl bg-gradient-to-r from-surface-1 via-surface-2 to-surface-1 border border-indigo-500/30 shadow-glow-card relative overflow-hidden">
@@ -115,7 +124,7 @@ export const RecommendationSection: React.FC<RecommendationSectionProps> = ({
                 <Award className="w-5 h-5" />
               </div>
               <h3 className="text-2xl sm:text-3xl font-extrabold text-white font-sans tracking-tight">
-                Top 10 Ranked Recommendations
+                Top {recommendations.length} Ranked Recommendations
               </h3>
             </div>
             <p className="text-xs sm:text-sm text-gray-400 mt-1.5">
