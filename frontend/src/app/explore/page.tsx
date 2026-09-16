@@ -12,29 +12,12 @@ import { MovieModal } from "@/components/MovieModal";
 import { Footer } from "@/components/Footer";
 import { useRouter } from "next/navigation";
 
-import { CatalogMovie, MovieRecommendation, MovieSearchItem, RecommendationResponse } from "@/types";
-import { MOCK_CATALOG } from "@/data/mock_movies";
+import { CatalogMovie, MovieRecommendation, MovieSearchItem, MovieSearchResponse, RecommendationResponse } from "@/types";
+import { fetchFromApi, describeProvenance, requestError } from "@/utils/api";
 
 // How many movies to show initially and how many to add on each "Load More"
 const INITIAL_DISPLAY_COUNT = 12;
 const LOAD_MORE_STEP = 12;
-
-async function fetchFromApi(endpoint: string, options?: RequestInit) {
-  try {
-    const res = await fetch(endpoint, options);
-    if (res.ok) return await res.json();
-  } catch (e) {}
-
-  const ports = [8000, 8001];
-  for (const port of ports) {
-    try {
-      const url = `http://127.0.0.1:${port}${endpoint}`;
-      const res = await fetch(url, options);
-      if (res.ok) return await res.json();
-    } catch (e) {}
-  }
-  throw new Error(`Failed to connect to backend at ${endpoint}`);
-}
 
 /** Sort movies: prioritize those with posters while preserving incoming backend ranking */
 function sortByQuality(movies: CatalogMovie[]): CatalogMovie[] {
@@ -49,6 +32,8 @@ function sortByQuality(movies: CatalogMovie[]): CatalogMovie[] {
 export default function ExplorePage() {
   const router = useRouter();
   const [selectedLanguage, setSelectedLanguage] = useState<string>("all");
+  const [exploreStatus, setExploreStatus] = useState("");
+  const recRequestId = useRef(0);
   const [allExploreMovies, setAllExploreMovies] = useState<CatalogMovie[]>([]);
   const [displayCount, setDisplayCount] = useState<number>(INITIAL_DISPLAY_COUNT);
   const [isExploreLoading, setIsExploreLoading] = useState<boolean>(false);
@@ -63,12 +48,16 @@ export default function ExplorePage() {
   const recSectionRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    let active = true;
     async function loadCatalog() {
       setIsExploreLoading(true);
+      setAllExploreMovies([]);
+      setExploreStatus("");
       setDisplayCount(INITIAL_DISPLAY_COUNT);
       try {
-        const data = await fetchFromApi(`/api/discover?language=${selectedLanguage}`);
-        if (data.results && data.results.length > 0) {
+        const data = await fetchFromApi<MovieSearchResponse>(`/api/discover?language=${selectedLanguage}`);
+        if (!active) return;
+        if (Array.isArray(data.results)) {
           const mapped: CatalogMovie[] = data.results.map((item: MovieSearchItem) => ({
             id: item.tmdb_id,
             tmdb_id: item.tmdb_id,
@@ -86,28 +75,19 @@ export default function ExplorePage() {
             sentiment: "Audience Rated",
           }));
           setAllExploreMovies(sortByQuality(mapped));
+          setExploreStatus(describeProvenance(data.provenance));
         } else {
-          fallbackLocalFilter(selectedLanguage);
+          throw new Error("The backend returned invalid discovery results.");
         }
       } catch (err) {
-        console.warn("Using fallback local catalog:", err);
-        fallbackLocalFilter(selectedLanguage);
+        if (active) setExploreStatus(`Discovery unavailable: ${requestError(err)}`);
       } finally {
-        setIsExploreLoading(false);
+        if (active) setIsExploreLoading(false);
       }
     }
-
     loadCatalog();
+    return () => { active = false; };
   }, [selectedLanguage]);
-
-  const fallbackLocalFilter = (lang: string) => {
-    const filtered = MOCK_CATALOG.filter((m) => {
-      if (lang === "all") return true;
-      if (lang === "global") return !["te", "hi", "ta", "ml", "kn"].includes(m.languageCode);
-      return m.languageCode === lang;
-    });
-    setAllExploreMovies(sortByQuality(filtered));
-  };
 
   const handleLoadMore = () => {
     setIsLoadingMore(true);
@@ -119,6 +99,8 @@ export default function ExplorePage() {
   };
 
   const handleGetRecommendations = async (tmdbId: number, query: string) => {
+    const requestId = ++recRequestId.current;
+    setRecommendationData(null);
     setIsLoadingRec(true);
     setLoadingMovieId(tmdbId > 0 ? tmdbId : null);
     setError(null);
@@ -140,13 +122,14 @@ export default function ExplorePage() {
         body: JSON.stringify(payload),
       });
 
-      setRecommendationData(data);
-    } catch (err: any) {
-      console.warn("API Error:", err.message);
-      setError("Unable to generate hybrid recommendations right now. Please try again.");
+      if (requestId === recRequestId.current) setRecommendationData(data);
+    } catch (err) {
+      if (requestId === recRequestId.current) setError(requestError(err));
     } finally {
-      setIsLoadingRec(false);
-      setLoadingMovieId(null);
+      if (requestId === recRequestId.current) {
+        setIsLoadingRec(false);
+        setLoadingMovieId(null);
+      }
     }
   };
 
@@ -213,7 +196,7 @@ export default function ExplorePage() {
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
             <SectionHeader
               title="Explore Cinema by Language"
-              subtitle="Browse regional cinema and international masterworks dynamically from TMDB"
+              subtitle={exploreStatus || "Browse regional and international cinema — awaiting data"}
               icon={Compass}
               badgeText="Broad Discovery"
             />
