@@ -120,3 +120,50 @@ def test_recommendation_failures_never_return_fabricated_results(environment):
     service.api_key = "test-key"
     state["empty"] = True
     assert client.post("/api/recommend", json={"query": "No match"}).status_code == 404
+
+
+def test_successful_recommendation_exposes_partial_input_failure(environment, monkeypatch):
+    from backend.services.provenance import record
+    from ml.content_engine import MovieMetadata
+    from ml.collab_engine import CollabScoreResult
+    from ml.hybrid_engine import HybridRecommendationEngine
+    from ml.sentiment_engine import SentimentScoreResult
+    client, service, fixture_engine, state, routes = environment
+
+    class Sentiment:
+        analyzer = object()
+        def __init__(self):
+            self.cache = {}
+        def analyze_batch(self, items):
+            self.cache = {mid: SentimentScoreResult(mid, 0.5, 0, 0, True, "Fixture fallback") for mid in items}
+            return self.cache
+
+    collab = fixture_engine.collab_engine
+    monkeypatch.setattr(collab, "calculate_similarity", lambda source, ids: {
+        mid: CollabScoreResult(mid, None, False, 0, "Fixture") for mid in ids
+    }, raising=False)
+    engine = HybridRecommendationEngine(sentiment_engine=Sentiment(), collab_engine=collab)
+    monkeypatch.setattr(routes, "hybrid_engine", engine)
+    source = MovieMetadata(1, "Seed", overview="A space adventure.", genres=["Adventure"])
+    candidate = MovieMetadata(2, "Candidate", overview="Another space adventure.", genres=["Adventure"])
+
+    async def details(mid):
+        record(endpoint=f"/movie/{mid}", source="tmdb", cache="fresh", fetched_at="2026-01-01T00:00:00+00:00")
+        return source
+    async def candidates(movie):
+        record(endpoint="/movie/1/recommendations", source="tmdb", cache="cached", fetched_at="2025-12-31T00:00:00+00:00")
+        return [candidate]
+    async def reviews(ids):
+        record(endpoint="/movie/2/reviews", source="none", cache="none", error={"code": "tmdb_timeout", "message": "TMDB request timed out."})
+        return {2: []}
+    monkeypatch.setattr(service, "get_movie_details", details)
+    monkeypatch.setattr(service, "get_candidate_pool", candidates)
+    monkeypatch.setattr(service, "get_candidate_reviews_map", reviews)
+    response = client.post("/api/recommend", json={"query": "Seed", "tmdb_id": 1})
+    assert response.status_code == 200
+    data = response.json()
+    assert [r["tmdb_id"] for r in data["recommendations"]] == [2]
+    assert data["provenance"]["source"] == "tmdb"
+    assert data["provenance"]["status"] == "degraded"
+    assert data["provenance"]["cache"] == "mixed"
+    assert data["signal_provenance"]["sentiment"]["2"]["source"] == "rating_or_overview_fallback"
