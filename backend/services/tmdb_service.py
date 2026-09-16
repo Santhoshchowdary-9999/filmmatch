@@ -11,6 +11,7 @@ import httpx
 
 from backend.config import settings
 from backend.schemas import MovieSearchItem
+from backend.services.provenance import TMDBFailure, is_demo, record, timestamp
 from ml.content_engine import MovieMetadata
 
 # Standard TMDB Genre ID mapping
@@ -731,20 +732,69 @@ class TMDBService:
         self._cache: dict[str, tuple[float, float, Any]] = {}
         self._cache_ttl_seconds = 300.0  # 5 minutes default
 
-    def _get_from_cache(self, key: str) -> Optional[Any]:
-        if key in self._cache:
-            ts, ttl, data = self._cache[key]
-            if time.time() - ts < ttl:
-                return data
-            else:
-                del self._cache[key]
-        return None
+    async def _request(self, endpoint: str, params: Optional[dict] = None,
+                       force_refresh: bool = False, ttl: float = 300.0,
+                       allow_stale: bool = True) -> dict:
+        """Cache only successful TMDB responses, including genuine empty results.
 
-    def _set_cache(self, key: str, data: Any, ttl: Optional[float] = None):
-        if len(self._cache) > 1000:
-            self._cache.clear()
-        actual_ttl = ttl if ttl is not None else self._cache_ttl_seconds
-        self._cache[key] = (time.time(), actual_ttl, data)
+        Last-known-good responses may survive transient failures for at most one
+        hour from their original fetch, never from the time they were reused.
+        """
+        import json
+        key = endpoint + ":" + json.dumps(params or {}, sort_keys=True)
+        cached = self._cache.get(key)
+        if cached and not force_refresh and time.time() - cached[0] < cached[1]:
+            record(endpoint=endpoint, source="tmdb", cache="cached", fetched_at=timestamp(cached[0]))
+            return cached[2]
+
+        failure = None
+        if not (self.api_key or self.read_token):
+            failure = TMDBFailure("tmdb_not_configured", "TMDB credentials are not configured.")
+        else:
+            try:
+                async with httpx.AsyncClient(headers=self.headers, timeout=10.0 if endpoint == "/trending/movie/day" else 2.0) as client:
+                    response = await client.get(f"{self.base_url}{endpoint}", params=self._get_params(params))
+                if response.status_code != 200:
+                    raise TMDBFailure("tmdb_http_error", "TMDB request failed.", response.status_code)
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise ValueError("Invalid response")
+                is_list = endpoint in ("/search/movie", "/discover/movie", "/trending/movie/day") or endpoint.endswith(("/reviews", "/recommendations", "/similar"))
+                if is_list and (not isinstance(data.get("results"), list) or any(not isinstance(item, dict) for item in data["results"])):
+                    raise ValueError("Invalid results")
+                if endpoint == "/configuration" and not isinstance(data.get("images"), dict):
+                    raise ValueError("Invalid configuration")
+                if endpoint.startswith("/movie/") and not is_list and not isinstance(data.get("id"), int):
+                    raise ValueError("Invalid movie")
+                now = time.time()
+                if len(self._cache) >= 1000 and key not in self._cache:
+                    oldest = min(self._cache, key=lambda item: self._cache[item][0])
+                    del self._cache[oldest]
+                self._cache[key] = (now, ttl, data)
+                record(endpoint=endpoint, source="tmdb", cache="fresh", fetched_at=timestamp(now))
+                return data
+            except TMDBFailure as exc:
+                failure = exc
+            except httpx.TimeoutException:
+                failure = TMDBFailure("tmdb_timeout", "TMDB request timed out.")
+            except httpx.RequestError:
+                failure = TMDBFailure("tmdb_unreachable", "TMDB could not be reached.")
+            except (ValueError, TypeError):
+                failure = TMDBFailure("tmdb_invalid_response", "TMDB returned an invalid response.")
+
+        transient = failure.error["code"] in ("tmdb_timeout", "tmdb_unreachable", "tmdb_invalid_response") or failure.error["upstream_status"] == 429 or (failure.error["upstream_status"] or 0) >= 500
+        if allow_stale and transient and cached and time.time() - cached[0] <= 3600:
+            record(endpoint=endpoint, source="tmdb", cache="stale", fetched_at=timestamp(cached[0]), error=failure.error)
+            return cached[2]
+        record(endpoint=endpoint, source="none", cache="none", fetched_at=None, error=failure.error)
+        raise failure
+
+    def _demo_items(self, movies: list[MovieMetadata], endpoint: str) -> list[MovieSearchItem]:
+        record(endpoint=endpoint, source="offline_demo", cache="none", fetched_at=None)
+        return [MovieSearchItem(tmdb_id=m.tmdb_id, title=m.title, release_date=m.release_date,
+                                original_language=m.original_language, poster_url=m.poster_url,
+                                backdrop_url=m.backdrop_url, vote_average=m.vote_average,
+                                overview=m.overview, genres=m.genres) for m in movies]
 
     def _get_params(self, extra: Optional[dict] = None) -> dict:
         params = {}
@@ -858,36 +908,13 @@ class TMDBService:
         ]
 
     async def search_movies(self, query: str, page: int = 1) -> list[MovieSearchItem]:
-        """Search movies by title/keyword across Indian and global cinema."""
         if not query or not query.strip():
             return []
-
-        cache_key = f"search:{query.strip().lower()}:{page}"
-        cached = self._get_from_cache(cache_key)
-        if cached is not None:
-            return cached
-
-        if self.api_key or self.read_token:
-            url = f"{self.base_url}/search/movie"
-            params = self._get_params({"query": query.strip(), "include_adult": "false", "page": page})
-
-            async with httpx.AsyncClient(headers=self.headers, timeout=2.0) as client:
-                try:
-                    res = await client.get(url, params=params)
-                    if res.status_code == 200:
-                        data = res.json()
-                        results = data.get("results", [])
-                        if results:
-                            mapped = self._map_raw_to_search_items(results)
-                            self._set_cache(cache_key, mapped)
-                            return mapped
-                except Exception as e:
-                    print(f"[-] TMDB search error: {e}")
-
-        # Resilient offline fallback
-        fallback = self._fallback_search(query)
-        self._set_cache(cache_key, fallback)
-        return fallback
+        if is_demo():
+            record(endpoint="/search/movie", source="offline_demo", cache="none", fetched_at=None)
+            return self._fallback_search(query)
+        data = await self._request("/search/movie", {"query": query.strip(), "include_adult": "false", "page": page})
+        return self._map_raw_to_search_items(data["results"])
 
     async def discover_movies(
         self,
@@ -900,43 +927,22 @@ class TMDBService:
         Discovers movies dynamically from TMDB with regional language filtering.
         Supports Telugu, Hindi, Tamil, Malayalam, Kannada, Global, and All categories.
         """
-        cache_key = f"discover:{language}:{genre_id}:{sort_by}:{page}"
-        cached = self._get_from_cache(cache_key)
-        if cached is not None:
-            return cached
-
-        if self.api_key or self.read_token:
-            url = f"{self.base_url}/discover/movie"
+        if not is_demo():
             extra_params: dict = {
-                "sort_by": sort_by,
-                "include_adult": "false",
-                "vote_count.gte": "5",
-                "page": page
+                "sort_by": sort_by, "include_adult": "false",
+                "vote_count.gte": "5", "page": page,
             }
-            if language and language != "all" and language != "global":
+            if language and language not in ("all", "global"):
                 extra_params["with_original_language"] = language
             elif language == "global":
                 extra_params["without_original_language"] = "te,hi,ta,ml,kn"
-
             if genre_id:
                 extra_params["with_genres"] = str(genre_id)
+            data = await self._request("/discover/movie", extra_params)
+            return self._map_raw_to_search_items(data["results"])
 
-            params = self._get_params(extra_params)
-
-            async with httpx.AsyncClient(headers=self.headers, timeout=2.0) as client:
-                try:
-                    res = await client.get(url, params=params)
-                    if res.status_code == 200:
-                        data = res.json()
-                        results = data.get("results", [])
-                        if results:
-                            mapped = self._map_raw_to_search_items(results)
-                            self._set_cache(cache_key, mapped)
-                            return mapped
-                except Exception as e:
-                    print(f"[-] TMDB discover error: {e}")
-
-        # Offline fallback: balanced multi-regional showcase for 'all', or filtered by language
+        record(endpoint="/discover/movie", source="offline_demo", cache="none", fetched_at=None)
+        # Explicit demo: existing balanced showcase, never a live failure fallback.
         if not language or language == "all":
             # Distinct balanced multi-regional discovery showcase:
             # Round-robin top-rated films from Telugu, Hindi, Tamil, Malayalam, Kannada, Global
@@ -971,7 +977,6 @@ class TMDBService:
                 )
                 for m in interleaved
             ]
-            self._set_cache(cache_key, items)
             return items
 
         filtered_catalog = sorted(
@@ -997,16 +1002,12 @@ class TMDBService:
             )
             for m in filtered_catalog
         ]
-        self._set_cache(cache_key, items)
         return items
 
     async def _get_multiregional_mix(self, sort_by: str = "popularity.desc", page: int = 1) -> list[MovieSearchItem]:
-        cache_key = f"multiregional:{sort_by}:{page}"
-        cached = self._get_from_cache(cache_key)
-        if cached is not None:
-            return cached
+        record(endpoint="demo/trending", source="offline_demo", cache="none", fetched_at=None)
 
-        # Dynamic sensible offline trending ranking: 50% Recency + 25% Vote Count + 25% Rating + Poster Bonus
+        # Existing demo ranking; not current TMDB trending.
         def compute_trending_score(m: MovieMetadata) -> float:
             try:
                 yr = int(m.release_date[:4]) if m.release_date else 2000
@@ -1033,7 +1034,6 @@ class TMDBService:
             )
             for m in sorted_catalog
         ]
-        self._set_cache(cache_key, items)
         return items
 
     async def get_trending_movies(
@@ -1044,158 +1044,84 @@ class TMDBService:
         Preserves official TMDB ranking and canonical metadata.
         Caches results for 10 minutes to prevent excessive TMDB requests while refreshing periodically.
         """
-        cache_key = f"trending:{language}:{page}"
-        if not force_refresh:
-            cached = self._get_from_cache(cache_key)
-            if cached is not None:
-                return cached
-
-        if self.api_key or self.read_token:
+        if is_demo():
             if language and language != "all":
-                return await self.discover_movies(language=language, sort_by="popularity.desc", page=page)
-
-            url = f"{self.base_url}/trending/movie/day"
-            params = self._get_params({"page": page})
-
-            async with httpx.AsyncClient(headers=self.headers, timeout=10.0) as client:
-                try:
-                    res = await client.get(url, params=params)
-                    if res.status_code == 200:
-                        data = res.json()
-                        results = data.get("results", [])
-                        if results:
-                            # Preserve official TMDB trending rank order
-                            mapped = self._map_raw_to_search_items(results, preserve_order=True)
-                            # Sensible 10-minute caching (600s)
-                            self._set_cache(cache_key, mapped, ttl=600.0)
-                            return mapped
-                except Exception as e:
-                    print(f"[-] TMDB trending error: {e}")
-
+                return await self.discover_movies(language=language, page=page)
+            return await self._get_multiregional_mix(page=page)
         if language and language != "all":
-            return await self.discover_movies(language=language, sort_by="popularity.desc", page=page)
-        return await self._get_multiregional_mix(sort_by="popularity.desc", page=page)
+            # Keep regional popularity semantics; provenance identifies the endpoint.
+            params = {"sort_by": "popularity.desc", "include_adult": "false", "vote_count.gte": "5", "page": page}
+            if language == "global":
+                params["without_original_language"] = "te,hi,ta,ml,kn"
+            else:
+                params["with_original_language"] = language
+            data = await self._request("/discover/movie", params, force_refresh=force_refresh)
+            return self._map_raw_to_search_items(data["results"])
+        data = await self._request("/trending/movie/day", {"page": page}, force_refresh=force_refresh, ttl=600.0)
+        return self._map_raw_to_search_items(data["results"], preserve_order=True)
 
     async def get_movie_details(self, tmdb_id: int) -> Optional[MovieMetadata]:
-        """Fetch detailed movie metadata including credits and keywords."""
-        cache_key = f"details:{tmdb_id}"
-        cached = self._get_from_cache(cache_key)
-        if cached is not None:
-            return cached
-
-        if self.api_key or self.read_token:
-            url = f"{self.base_url}/movie/{tmdb_id}"
-            params = self._get_params({"append_to_response": "credits,keywords"})
-
-            async with httpx.AsyncClient(headers=self.headers, timeout=2.0) as client:
-                try:
-                    res = await client.get(url, params=params)
-                    if res.status_code == 200:
-                        data = res.json()
-                        genres = [g.get("name", "") for g in data.get("genres", []) if g.get("name")]
-                        director = ""
-                        credits = data.get("credits", {})
-                        for crew_member in credits.get("crew", []):
-                            if crew_member.get("job") == "Director":
-                                director = crew_member.get("name", "")
-                                break
-                        cast = [actor.get("name", "") for actor in credits.get("cast", [])[:5] if actor.get("name")]
-                        keywords_data = data.get("keywords", {})
-                        keywords_list = keywords_data.get("keywords", []) or keywords_data.get("results", [])
-                        keywords = [kw.get("name", "") for kw in keywords_list if kw.get("name")]
-
-                        movie_meta = MovieMetadata(
-                            tmdb_id=data["id"],
-                            title=data.get("title", ""),
-                            overview=data.get("overview", ""),
-                            genres=genres,
-                            director=director,
-                            cast=cast,
-                            keywords=keywords,
-                            original_language=data.get("original_language", "en"),
-                            release_date=data.get("release_date", ""),
-                            poster_url=self._format_poster(data.get("poster_path")),
-                            backdrop_url=self._format_backdrop(data.get("backdrop_path")),
-                            vote_average=round(float(data.get("vote_average", 0.0)), 1),
-                            vote_count=int(data.get("vote_count", 0))
-                        )
-                        self._set_cache(cache_key, movie_meta)
-                        return movie_meta
-                except Exception as e:
-                    print(f"[-] Error fetching TMDB #{tmdb_id} details: {e}")
-
-        # Resilient offline fallback lookup matching by tmdb_id
-        for m in OFFLINE_CATALOG:
-            if m.tmdb_id == tmdb_id:
-                self._set_cache(cache_key, m)
-                return m
-
-        return None
+        if is_demo():
+            record(endpoint=f"/movie/{tmdb_id}", source="offline_demo", cache="none", fetched_at=None)
+            return next((m for m in OFFLINE_CATALOG if m.tmdb_id == tmdb_id), None)
+        try:
+            data = await self._request(f"/movie/{tmdb_id}", {"append_to_response": "credits,keywords"})
+        except TMDBFailure as exc:
+            if exc.error["upstream_status"] == 404:
+                return None
+            raise
+        credits = data.get("credits") or {}
+        keywords_data = data.get("keywords") or {}
+        keywords_list = keywords_data.get("keywords", []) or keywords_data.get("results", [])
+        return MovieMetadata(
+            tmdb_id=data["id"], title=data.get("title") or "", overview=data.get("overview") or "",
+            genres=[g["name"] for g in data.get("genres", []) if g.get("name")],
+            director=next((c.get("name", "") for c in credits.get("crew", []) if c.get("job") == "Director"), ""),
+            cast=[a["name"] for a in credits.get("cast", [])[:5] if a.get("name")],
+            keywords=[kw["name"] for kw in keywords_list if kw.get("name")],
+            original_language=data.get("original_language") or "en", release_date=data.get("release_date") or "",
+            poster_url=self._format_poster(data.get("poster_path")), backdrop_url=self._format_backdrop(data.get("backdrop_path")),
+            vote_average=round(float(data.get("vote_average") or 0), 1), vote_count=int(data.get("vote_count") or 0),
+        )
 
     async def get_movie_reviews(self, tmdb_id: int) -> list[str]:
-        """Fetch audience reviews for a movie."""
-        cache_key = f"reviews:{tmdb_id}"
-        cached = self._get_from_cache(cache_key)
-        if cached is not None:
-            return cached
-
-        if self.api_key or self.read_token:
-            url = f"{self.base_url}/movie/{tmdb_id}/reviews"
-            params = self._get_params({"page": 1})
-
-            async with httpx.AsyncClient(headers=self.headers, timeout=2.0) as client:
-                try:
-                    res = await client.get(url, params=params)
-                    if res.status_code == 200:
-                        data = res.json()
-                        results = data.get("results", [])
-                        reviews = [r.get("content", "") for r in results if r.get("content")]
-                        self._set_cache(cache_key, reviews)
-                        return reviews
-                except Exception:
-                    pass
-
-        return []
+        endpoint = f"/movie/{tmdb_id}/reviews"
+        if is_demo():
+            record(endpoint=endpoint, source="offline_demo", cache="none", fetched_at=None)
+            return []
+        try:
+            data = await self._request(endpoint, {"page": 1})
+            return [r["content"] for r in data["results"] if isinstance(r.get("content"), str) and r["content"]]
+        except TMDBFailure:
+            # Sentiment fallback is part of the existing engine. The failed
+            # review request remains visible in the response provenance.
+            return []
 
     async def get_candidate_pool(self, source_movie: MovieMetadata) -> list[MovieMetadata]:
         """
         Builds a rich, diverse candidate pool of related movies.
         """
+        if is_demo():
+            record(endpoint="demo/candidates", source="offline_demo", cache="none", fetched_at=None)
+            return [m for m in OFFLINE_CATALOG if m.tmdb_id != source_movie.tmdb_id]
         candidate_ids: set[int] = set()
-
-        if self.api_key or self.read_token:
-            async with httpx.AsyncClient(headers=self.headers, timeout=2.0) as client:
-                try:
-                    rec_url = f"{self.base_url}/movie/{source_movie.tmdb_id}/recommendations"
-                    res_rec = await client.get(rec_url, params=self._get_params())
-                    if res_rec.status_code == 200:
-                        for m in res_rec.json().get("results", []):
-                            if m["id"] != source_movie.tmdb_id:
-                                candidate_ids.add(m["id"])
-                except Exception:
-                    pass
-
-                try:
-                    sim_url = f"{self.base_url}/movie/{source_movie.tmdb_id}/similar"
-                    res_sim = await client.get(sim_url, params=self._get_params())
-                    if res_sim.status_code == 200:
-                        for m in res_sim.json().get("results", []):
-                            if m["id"] != source_movie.tmdb_id:
-                                candidate_ids.add(m["id"])
-                except Exception:
-                    pass
-
-        if candidate_ids:
-            selected_ids = list(candidate_ids)[:45]
-            tasks = [self.get_movie_details(m_id) for m_id in selected_ids]
-            candidates = await asyncio.gather(*tasks)
-            valid_candidates = [c for c in candidates if c is not None and c.tmdb_id != source_movie.tmdb_id]
-            if len(valid_candidates) >= 10:
-                return valid_candidates
-
-        # Resilient offline candidate generation with all other movies
-        offline_candidates = [m for m in OFFLINE_CATALOG if m.tmdb_id != source_movie.tmdb_id]
-        return offline_candidates
+        failures = []
+        for kind in ("recommendations", "similar"):
+            try:
+                data = await self._request(f"/movie/{source_movie.tmdb_id}/{kind}")
+                candidate_ids.update(m["id"] for m in data["results"] if m.get("id") and m["id"] != source_movie.tmdb_id)
+            except TMDBFailure as exc:
+                failures.append(exc)
+        candidates = await asyncio.gather(*[self.get_movie_details(mid) for mid in list(candidate_ids)[:45]], return_exceptions=True)
+        valid = [m for m in candidates if isinstance(m, MovieMetadata) and m.tmdb_id != source_movie.tmdb_id]
+        failures.extend(m for m in candidates if isinstance(m, TMDBFailure))
+        unexpected = next((m for m in candidates if isinstance(m, Exception) and not isinstance(m, TMDBFailure)), None)
+        if unexpected:
+            raise unexpected
+        if not valid and failures:
+            raise failures[0]
+        # Partial live results are useful; never replace them with demo films.
+        return valid
 
     async def get_candidate_reviews_map(
         self, candidate_ids: list[int]

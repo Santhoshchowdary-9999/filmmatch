@@ -2,8 +2,18 @@
 FilmMatch AI — Pydantic Schemas
 Strictly implementing the JSON data schemas defined in gemini.md.
 """
-from typing import Optional
+from typing import Optional, Literal, Any
 from pydantic import BaseModel, Field
+
+
+class ProvenanceSchema(BaseModel):
+    status: Literal["ok", "empty", "degraded", "failed"]
+    source: Literal["tmdb", "offline_demo", "mixed", "none"]
+    cache: Literal["fresh", "cached", "stale", "mixed", "none"]
+    fetched_at: Optional[str] = None
+    stale: bool = False
+    errors: list[dict[str, Any]] = Field(default_factory=list)
+    components: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class RecommendationRequest(BaseModel):
@@ -51,6 +61,8 @@ class RecommendationResponse(BaseModel):
     recommendations: list[MovieRecommendationSchema]
     applied_weights: dict[str, float]
     execution_time_ms: float
+    provenance: ProvenanceSchema
+    signal_provenance: dict[str, Any] = Field(default_factory=dict)
 
 
 class MovieSearchItem(BaseModel):
@@ -71,11 +83,15 @@ class MovieSearchResponse(BaseModel):
     query: str
     results: list[MovieSearchItem]
     total_results: int
+    provenance: ProvenanceSchema
 
 
 class HealthResponse(BaseModel):
     status: str
+    ready: bool
     version: str
     tmdb_configured: bool
     movielens_mapped_count: int
     database_target: str
+    dependencies: dict[str, Any]
+    provenance: ProvenanceSchema

@@ -3,7 +3,7 @@ FilmMatch AI — Recommendations & Movie Discovery Routes
 Exposes REST endpoints for search, hybrid recommendations, dynamic discovery by language, trending, movie details, and health checks.
 """
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from backend.config import settings
 from backend.schemas import (
@@ -17,6 +17,7 @@ from backend.schemas import (
     SourceMovieSchema,
 )
 from backend.services.tmdb_service import TMDBService
+from backend.services.provenance import TMDBFailure, report
 from ml.content_engine import MovieMetadata
 from ml.hybrid_engine import HybridRecommendationEngine
 
@@ -28,18 +29,7 @@ hybrid_engine = HybridRecommendationEngine()
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Health check endpoint exposing system status, TMDB connectivity, and dataset counts."""
-    has_tmdb = bool(settings.TMDB_API_KEY or settings.TMDB_READ_ACCESS_TOKEN or True)
-    mapped_count = len(hybrid_engine.collab_engine.tmdb_to_movie) if hybrid_engine.collab_engine.is_initialized else 9734
-
-    return HealthResponse(
-        status="healthy",
-        version=settings.VERSION,
-        tmdb_configured=has_tmdb,
-        movielens_mapped_count=mapped_count,
-        database_target="PostgreSQL"
-    )
+async def health_check
 
 
 @router.get("/search", response_model=MovieSearchResponse)
