@@ -15,6 +15,19 @@ export interface MovieSearchResponse {
   provenance: Provenance;
 }
 
+export interface WatchProvider {
+  provider_id: number;
+  provider_name: string;
+  logo_path: string;
+}
+
+export interface WatchProvidersData {
+  flatrate?: WatchProvider[];
+  rent?: WatchProvider[];
+  buy?: WatchProvider[];
+  link?: string;
+}
+
 export interface ScoreBreakdown {
   content_similarity: number;
   sentiment_score: number;
@@ -37,6 +50,7 @@ export interface MovieRecommendation {
   hybrid_score: number;
   match_percentage: number;
   score_breakdown: ScoreBreakdown;
+  watch_providers?: WatchProvidersData | null;
 }
 
 export interface SourceMovie {
@@ -45,6 +59,7 @@ export interface SourceMovie {
   release_date: string;
   original_language: string;
   poster_url: string;
+  backdrop_url?: string;
   genres: string[];
   overview: string;
 }

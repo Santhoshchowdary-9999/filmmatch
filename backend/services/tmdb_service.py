@@ -723,14 +723,26 @@ class TMDBService:
         self.image_base_url = settings.TMDB_IMAGE_BASE_URL
         self.api_key = settings.TMDB_API_KEY
         self.read_token = settings.TMDB_READ_ACCESS_TOKEN
-        
+
         self.headers = {"User-Agent": "FilmMatch-AI/1.0"}
         if self.read_token:
             self.headers["Authorization"] = f"Bearer {self.read_token}"
 
+        # Persistent async HTTP client — reused across all requests to avoid
+        # per-call TLS handshake and connection-pool overhead.
+        # Default timeout: 5 s connect + 15 s read (trending overrides to 20 s read).
+        self._client = httpx.AsyncClient(
+            headers=self.headers,
+            timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0),
+        )
+
         # Simple In-Memory TTL Cache: key -> (timestamp, ttl, data)
         self._cache: dict[str, tuple[float, float, Any]] = {}
         self._cache_ttl_seconds = 300.0  # 5 minutes default
+
+    async def close(self) -> None:
+        """Close the persistent HTTP client. Call on application shutdown."""
+        await self._client.aclose()
 
     async def _request(self, endpoint: str, params: Optional[dict] = None,
                        force_refresh: bool = False, ttl: float = 300.0,
@@ -751,54 +763,91 @@ class TMDBService:
         if not (self.api_key or self.read_token):
             failure = TMDBFailure("tmdb_not_configured", "TMDB credentials are not configured.")
         else:
-            try:
-                async with httpx.AsyncClient(headers=self.headers, timeout=10.0 if endpoint == "/trending/movie/day" else 2.0) as client:
-                    response = await client.get(f"{self.base_url}{endpoint}", params=self._get_params(params))
-                if response.status_code != 200:
-                    raise TMDBFailure("tmdb_http_error", "TMDB request failed.", response.status_code)
-                data = response.json()
-                if not isinstance(data, dict):
-                    raise ValueError("Invalid response")
-                is_list = endpoint in ("/search/movie", "/discover/movie", "/trending/movie/day") or endpoint.endswith(("/reviews", "/recommendations", "/similar"))
-                if is_list and (not isinstance(data.get("results"), list) or any(not isinstance(item, dict) for item in data["results"])):
-                    raise ValueError("Invalid results")
-                if is_list and not endpoint.endswith("/reviews"):
-                    # Reject malformed movie pages before they can replace good cache data.
-                    if any(not isinstance(m.get("id"), int) or not isinstance(m.get("title"), str) or not m["title"] for m in data["results"]):
-                        raise ValueError("Invalid movie list")
-                    self._map_raw_to_search_items(data["results"])
-                if endpoint == "/configuration" and not isinstance(data.get("images"), dict):
-                    raise ValueError("Invalid configuration")
-                if endpoint.startswith("/movie/") and not is_list:
-                    if not isinstance(data.get("id"), int) or not isinstance(data.get("title"), str):
-                        raise ValueError("Invalid movie")
-                    float(data.get("vote_average") or 0)
-                    int(data.get("vote_count") or 0)
-                    for name in ("credits", "keywords"):
-                        if data.get(name) is not None and not isinstance(data[name], dict):
-                            raise ValueError("Invalid metadata")
-                    groups = [data.get("genres", []), (data.get("credits") or {}).get("cast", []),
-                              (data.get("credits") or {}).get("crew", []),
-                              (data.get("keywords") or {}).get("keywords", [])]
-                    if any(not isinstance(group, list) or any(not isinstance(item, dict) for item in group) for group in groups):
-                        raise ValueError("Invalid metadata lists")
-                now = time.time()
-                if len(self._cache) >= 1000 and key not in self._cache:
-                    oldest = min(self._cache, key=lambda item: self._cache[item][0])
-                    del self._cache[oldest]
-                self._cache[key] = (now, ttl, data)
-                record(endpoint=endpoint, source="tmdb", cache="fresh", fetched_at=timestamp(now))
-                return data
-            except TMDBFailure as exc:
-                failure = exc
-            except httpx.TimeoutException:
-                failure = TMDBFailure("tmdb_timeout", "TMDB request timed out.")
-            except httpx.RequestError:
-                failure = TMDBFailure("tmdb_unreachable", "TMDB could not be reached.")
-            except (ValueError, TypeError):
-                failure = TMDBFailure("tmdb_invalid_response", "TMDB returned an invalid response.")
+            # Attempt request up to 3 times with exponential backoff for transient faults
+            # (timeout, connection error, HTTP 429 rate limit, HTTP 5xx server error).
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    per_request_timeout = (
+                        httpx.Timeout(connect=5.0, read=20.0, write=5.0, pool=5.0)
+                        if endpoint == "/trending/movie/day"
+                        else httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0)
+                    )
+                    response = await self._client.get(
+                        f"{self.base_url}{endpoint}",
+                        params=self._get_params(params),
+                        timeout=per_request_timeout,
+                    )
+                    if response.status_code == 429 or response.status_code >= 500:
+                        raise TMDBFailure(
+                            "tmdb_transient_error",
+                            f"TMDB returned transient status {response.status_code}.",
+                            response.status_code,
+                        )
+                    if response.status_code != 200:
+                        raise TMDBFailure("tmdb_http_error", "TMDB request failed.", response.status_code)
+                    data = response.json()
+                    if not isinstance(data, dict):
+                        raise ValueError("Invalid response")
+                    is_list = endpoint in ("/search/movie", "/discover/movie", "/trending/movie/day") or endpoint.endswith(("/reviews", "/recommendations", "/similar"))
+                    if is_list and (not isinstance(data.get("results"), list) or any(not isinstance(item, dict) for item in data["results"])):
+                        raise ValueError("Invalid results")
+                    if is_list and not endpoint.endswith("/reviews"):
+                        # Reject malformed movie pages before they can replace good cache data.
+                        if any(not isinstance(m.get("id"), int) or not isinstance(m.get("title"), str) or not m["title"] for m in data["results"]):
+                            raise ValueError("Invalid movie list")
+                        self._map_raw_to_search_items(data["results"])
+                    if endpoint == "/configuration" and not isinstance(data.get("images"), dict):
+                        raise ValueError("Invalid configuration")
+                    # /watch/providers returns {results: {IN: {...}}} — skip movie-detail validation
+                    is_watch_providers = endpoint.endswith("/watch/providers")
+                    if endpoint.startswith("/movie/") and not is_list and not is_watch_providers:
+                        if not isinstance(data.get("id"), int) or not isinstance(data.get("title"), str):
+                            raise ValueError("Invalid movie")
+                        float(data.get("vote_average") or 0)
+                        int(data.get("vote_count") or 0)
+                        for name in ("credits", "keywords"):
+                            if data.get(name) is not None and not isinstance(data[name], dict):
+                                raise ValueError("Invalid metadata")
+                        groups = [data.get("genres", []), (data.get("credits") or {}).get("cast", []),
+                                  (data.get("credits") or {}).get("crew", []),
+                                  (data.get("keywords") or {}).get("keywords", [])]
+                        if any(not isinstance(group, list) or any(not isinstance(item, dict) for item in group) for group in groups):
+                            raise ValueError("Invalid metadata lists")
 
-        transient = failure.error["code"] in ("tmdb_timeout", "tmdb_unreachable", "tmdb_invalid_response") or failure.error["upstream_status"] == 429 or (failure.error["upstream_status"] or 0) >= 500
+                    now = time.time()
+                    if len(self._cache) >= 1000 and key not in self._cache:
+                        oldest = min(self._cache, key=lambda item: self._cache[item][0])
+                        del self._cache[oldest]
+                    self._cache[key] = (now, ttl, data)
+                    record(endpoint=endpoint, source="tmdb", cache="fresh", fetched_at=timestamp(now))
+                    return data
+                except TMDBFailure as exc:
+                    failure = exc
+                    # Retry on transient status (429, 5xx) with exponential backoff
+                    if exc.error.get("code") == "tmdb_transient_error" and attempt < max_attempts - 1:
+                        backoff = 0.5 * (2 ** attempt)
+                        await asyncio.sleep(backoff)
+                        continue
+                    break
+                except httpx.TimeoutException:
+                    failure = TMDBFailure("tmdb_timeout", "TMDB request timed out.")
+                    if attempt < max_attempts - 1:
+                        backoff = 0.5 * (2 ** attempt)
+                        await asyncio.sleep(backoff)
+                        continue
+                except httpx.RequestError:
+                    failure = TMDBFailure("tmdb_unreachable", "TMDB could not be reached.")
+                    if attempt < max_attempts - 1:
+                        backoff = 0.5 * (2 ** attempt)
+                        await asyncio.sleep(backoff)
+                        continue
+                except (ValueError, TypeError):
+                    failure = TMDBFailure("tmdb_invalid_response", "TMDB returned an invalid response.")
+                    break
+                break
+
+        transient = failure.error["code"] in ("tmdb_timeout", "tmdb_unreachable", "tmdb_invalid_response", "tmdb_transient_error") or failure.error["upstream_status"] == 429 or (failure.error["upstream_status"] or 0) >= 500
         if allow_stale and transient and cached and time.time() - cached[0] <= 3600:
             record(endpoint=endpoint, source="tmdb", cache="stale", fetched_at=timestamp(cached[0]), error=failure.error)
             return cached[2]
@@ -1093,10 +1142,43 @@ class TMDBService:
         # Partial live results are useful; never replace them with demo films.
         return valid
 
+    async def get_watch_providers(self, tmdb_id: int) -> dict:
+        """Fetch IN-region watch providers from TMDB JustWatch data.
+
+        Reuses the existing _request() helper including retry, backoff, and provenance tracking.
+        TTL is 6 hours (21600 s) — provider catalogues update infrequently.
+        Returns the raw IN region dict (keys: flatrate, rent, buy, link) or {} when:
+          - TMDB has no IN data for this movie
+          - Any network/API failure occurs
+        NEVER invents provider data.
+        """
+        endpoint = f"/movie/{tmdb_id}/watch/providers"
+        if is_demo():
+            record(endpoint=endpoint, source="offline_demo", cache="none", fetched_at=None)
+            return {}
+        try:
+            data = await self._request(endpoint, params=None, ttl=21600.0)
+            in_data: dict = (data.get("results") or {}).get("IN") or {}
+            return in_data
+        except TMDBFailure:
+            # Graceful degradation: provider data is optional, never blocks recommendations.
+            return {}
+        except Exception:
+            return {}
+
     async def get_candidate_reviews_map(
         self, candidate_ids: list[int]
     ) -> dict[int, list[str]]:
-        """Fetch audience reviews for candidates."""
-        tasks = [self.get_movie_reviews(m_id) for m_id in candidate_ids]
-        reviews_lists = await asyncio.gather(*tasks)
-        return dict(zip(candidate_ids, reviews_lists))
+        """Fetch audience reviews for candidates with graceful partial fallbacks."""
+        async def _safe_get_reviews(mid: int) -> list[str]:
+            try:
+                return await self.get_movie_reviews(mid)
+            except Exception:
+                return []
+
+        tasks = [_safe_get_reviews(m_id) for m_id in candidate_ids]
+        reviews_lists = await asyncio.gather(*tasks, return_exceptions=True)
+        results = {}
+        for mid, revs in zip(candidate_ids, reviews_lists):
+            results[mid] = revs if isinstance(revs, list) else []
+        return results

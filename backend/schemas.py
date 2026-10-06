@@ -2,8 +2,9 @@
 FilmMatch AI — Pydantic Schemas
 Strictly implementing the JSON data schemas defined in gemini.md.
 """
+import re
 from typing import Optional, Literal, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ProvenanceSchema(BaseModel):
@@ -16,10 +17,46 @@ class ProvenanceSchema(BaseModel):
     components: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class CustomWeights(BaseModel):
+    content: float = Field(0.50, ge=0.0, le=1.0, description="Story DNA weight (0.0–1.0)")
+    sentiment: float = Field(0.20, ge=0.0, le=1.0, description="Audience Sentiment weight (0.0–1.0)")
+    collaborative: float = Field(0.30, ge=0.0, le=1.0, description="Viewer Affinity weight (0.0–1.0)")
+
+
 class RecommendationRequest(BaseModel):
-    query: str = Field(..., description="Movie title or search term", min_length=1)
+    query: str = Field(..., description="Movie title or search term", min_length=1, max_length=200)
     tmdb_id: Optional[int] = Field(None, description="Optional explicit TMDB ID if selected from autocomplete")
     top_k: int = Field(10, description="Number of recommendations to return", ge=1, le=50)
+    custom_weights: Optional[CustomWeights] = Field(None, description="Optional custom hybrid weights (must not all be 0)")
+
+    @field_validator("query")
+    @classmethod
+    def sanitize_query(cls, v: str) -> str:
+        if not isinstance(v, str):
+            raise ValueError("Query must be a string.")
+        # Strip control characters (ASCII 0-31, 127-159)
+        sanitized = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", v).strip()
+        if not sanitized:
+            raise ValueError("Query cannot be empty or purely whitespace/control characters.")
+        if len(sanitized) > 200:
+            raise ValueError("Query exceeds maximum allowed length of 200 characters.")
+        return sanitized
+
+
+class WatchProviderItem(BaseModel):
+    """A single streaming/rental/purchase provider entry from TMDB JustWatch data."""
+    provider_id: int
+    provider_name: str
+    logo_path: str = Field(..., description="Relative TMDB image path, e.g. /abc.jpg")
+
+
+class WatchProvidersData(BaseModel):
+    """IN-region watch providers from TMDB /movie/{id}/watch/providers. Never invented."""
+    flatrate: list[WatchProviderItem] = Field(default_factory=list, description="Subscription streaming")
+    rent: list[WatchProviderItem] = Field(default_factory=list, description="Rental providers")
+    buy: list[WatchProviderItem] = Field(default_factory=list, description="Purchase providers")
+    link: Optional[str] = Field(None, description="JustWatch attribution URL for IN region")
+
 
 
 class ScoreBreakdownSchema(BaseModel):
@@ -44,6 +81,10 @@ class MovieRecommendationSchema(BaseModel):
     hybrid_score: float = Field(..., description="Overall score out of 100")
     match_percentage: int = Field(..., description="Normalized integer percentage 0-100%")
     score_breakdown: ScoreBreakdownSchema
+    watch_providers: Optional[WatchProvidersData] = Field(
+        None,
+        description="IN-region streaming providers from TMDB JustWatch. Empty/None when unavailable."
+    )
 
 
 class SourceMovieSchema(BaseModel):

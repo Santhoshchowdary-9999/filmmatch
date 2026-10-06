@@ -114,6 +114,31 @@ The system supports global cinema while giving explicit prioritization to **Indi
       "required": ["content_similarity", "sentiment_score", "is_cold_start", "explanation"]
     }
   },
+  "watch_providers": {
+    "type": "object",
+    "description": "Where to watch in India (IN region). Sourced from TMDB /movie/{id}/watch/providers. Optional — omit or use empty object/null when unavailable. NEVER invent provider data.",
+    "properties": {
+      "flatrate": {
+        "type": "array",
+        "description": "Subscription streaming providers",
+        "items": { "$ref": "#/definitions/WatchProvider" }
+      },
+      "rent": {
+        "type": "array",
+        "description": "Rental providers",
+        "items": { "$ref": "#/definitions/WatchProvider" }
+      },
+      "buy": {
+        "type": "array",
+        "description": "Purchase providers",
+        "items": { "$ref": "#/definitions/WatchProvider" }
+      },
+      "link": {
+        "type": "string",
+        "description": "JustWatch attribution link for the IN region"
+      }
+    }
+  },
   "required": [
     "tmdb_id",
     "title",
@@ -124,6 +149,21 @@ The system supports global cinema while giving explicit prioritization to **Indi
     "match_percentage",
     "score_breakdown"
   ]
+}
+```
+
+### 3.4 WatchProvider Sub-Schema
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WatchProvider",
+  "type": "object",
+  "properties": {
+    "provider_id": { "type": "integer" },
+    "provider_name": { "type": "string" },
+    "logo_path": { "type": "string", "description": "Relative TMDB image path, e.g. /abcdef.jpg" }
+  },
+  "required": ["provider_id", "provider_name", "logo_path"]
 }
 ```
 
@@ -173,3 +213,37 @@ The system supports global cinema while giving explicit prioritization to **Indi
 - **Fail-Safe Fallbacks**: If MovieLens collaborative data is missing, apply the defined cold-start weights ($0.65$ content, $0.35$ sentiment) and mark the badge `"New Release / Content + Audience Match"`.
 - **No Hallucinated Data**: All poster images and metadata must resolve to actual TMDB or verified dataset entries.
 - **Language & Regional Prioritization**: Ensure search and candidate generation effectively index Indian languages (`te` for Telugu, `hi` for Hindi, `ta`, `ml`, `kn`) alongside global cinema.
+
+---
+
+## 5. Feature Contracts
+
+### 5.1 Where to Watch (IN Region) — Feature 1
+- TMDB endpoint: `GET /movie/{id}/watch/providers` (JustWatch-powered).
+- **Region**: `IN` only. Return `flatrate`, `rent`, `buy` arrays. Each entry: `provider_id`, `provider_name`, `logo_path`.
+- Cache TTL: **6 hours** in-memory (shared `_cache` dict, same as other endpoints).
+- `watch_providers` field is **optional** in the response schema. Return an empty object `{}` (not null) when TMDB returns no IN data.
+- **JustWatch Attribution**: The text "Streaming data provided by JustWatch" MUST appear near provider badges in the UI and in the Footer.
+- Front-end: provider badges in `MovieModal`. Show on `MovieCard` only if space allows cleanly. Show `"Not available to stream in India"` when the object is empty.
+- No secrets in client bundle. Provider logo URLs are constructed from `image.tmdb.org`.
+
+### 5.2 Filters + Hidden Gems — Feature 2
+- Filters are applied **after** hybrid scoring. Scores are never modified by filters.
+- Optional request fields added to `POST /api/recommend`: `year_min`, `year_max`, `runtime_max`, `genres` (list), `min_rating`, `language` (list), `hidden_gems` (bool).
+- **Hidden Gems definition**: `sentiment_score >= HIDDEN_GEMS_MIN_SENTIMENT AND vote_count < HIDDEN_GEMS_MAX_VOTES`. Thresholds are read from `config.py`, NOT hardcoded in route or engine:
+  - `HIDDEN_GEMS_MIN_SENTIMENT: float = 0.75`
+  - `HIDDEN_GEMS_MAX_VOTES: int = 1000`
+- If filtering reduces results below `top_k`, the response MUST include a `filter_info` note stating how many results matched.
+- An empty filter result returns 200 with an empty `recommendations` list and a descriptive `filter_info` message.
+- Existing `LanguageFilter` on the frontend must continue working unchanged.
+
+### 5.3 Good/Bad Feedback — Feature 3
+- Front-end: thumbs up / thumbs down on `MovieCard` and `MovieModal`. Vote persists per session. Allow changing vote.
+- **Session ID**: Anonymous UUID generated client-side, stored in `localStorage`. No personal data collected.
+- `POST /api/feedback` fields: `session_id` (str), `source_tmdb_id` (int), `recommended_tmdb_id` (int), `vote` ("up"|"down"), `hybrid_score` (float), `is_cold_start` (bool).
+- Rate limit: same as `/api/recommend` (30/min). Strict Pydantic validation.
+- **Storage interface**: `backend/services/feedback_store.py` with `FeedbackStore` ABC and `JSONLFeedbackStore` implementation.
+  - Storage path: `data/feedback/` (gitignored). Append-only `.jsonl` file.
+  - Clearly marked `TEMPORARY` in code. Future PostgreSQL table definition lives in `architecture/06_feedback_store.md`.
+  - **No SQLite fallback** under any circumstances.
+- Privacy: README must include a short note that votes are anonymous and no personal data is collected.

@@ -2,12 +2,15 @@
 FilmMatch AI — Recommendations & Movie Discovery Routes
 Exposes REST endpoints for search, hybrid recommendations, dynamic discovery by language, trending, movie details, and health checks.
 """
+import re
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 
 from backend.config import settings
+from backend.limiter import limiter
 from backend.schemas import (
     HealthResponse,
+    CustomWeights,
     MovieRecommendationSchema,
     MovieSearchItem,
     MovieSearchResponse,
@@ -15,6 +18,8 @@ from backend.schemas import (
     RecommendationResponse,
     ScoreBreakdownSchema,
     SourceMovieSchema,
+    WatchProviderItem,
+    WatchProvidersData,
 )
 from backend.services.tmdb_service import TMDBService
 from backend.services.provenance import TMDBFailure, report
@@ -76,14 +81,22 @@ async def health_check(response: Response):
 
 
 @router.get("/search", response_model=MovieSearchResponse)
+@limiter.limit("60/minute")
 async def search_movies(
-    q: str = Query(..., min_length=1, description="Movie title or keyword query"),
+    request: Request,
+    q: str = Query(..., min_length=1, max_length=200, description="Movie title or keyword query"),
     page: int = Query(1, ge=1, le=10)
 ):
     """Search for movies across Indian and global cinema with autocomplete support."""
-    results = await tmdb_service.search_movies(query=q, page=page)
+    sanitized_q = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", q).strip()
+    if not sanitized_q:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Search query cannot be empty or purely whitespace."
+        )
+    results = await tmdb_service.search_movies(query=sanitized_q, page=page)
     return MovieSearchResponse(
-        query=q,
+        query=sanitized_q,
         results=results,
         total_results=len(results),
         provenance=report(empty=not results),
@@ -131,7 +144,8 @@ async def get_trending(
 
 
 @router.post("/recommend", response_model=RecommendationResponse)
-async def get_recommendations(req: RecommendationRequest):
+@limiter.limit("30/minute")
+async def get_recommendations(request: Request, req: RecommendationRequest):
     """
     Generates 10 ranked hybrid movie recommendations based on Content Similarity,
     Audience Sentiment (NLTK VADER), and Collaborative Filtering (MovieLens).
@@ -182,16 +196,58 @@ async def get_recommendations(req: RecommendationRequest):
     }
 
     # 4. Execute Hybrid Recommendation Engine
+    # Build custom weights dict if provided by the caller (weight-sliders feature)
+    custom_w = None
+    if req.custom_weights:
+        cw = req.custom_weights
+        total = cw.content + cw.sentiment + cw.collaborative
+        if total > 0:
+            custom_w = {
+                "content": cw.content / total,
+                "sentiment": cw.sentiment / total,
+                "collaborative": cw.collaborative / total,
+            }
+
     payload = hybrid_engine.score_and_rank(
         source_movie=source_movie,
         candidates=candidates,
         candidate_reviews_map=reviews_input_map,
-        top_k=req.top_k
+        top_k=req.top_k,
+        custom_weights=custom_w,
     )
 
     # Format response strictly matching Pydantic schema
+    # Fetch watch providers concurrently for all top-k winners.
+    import asyncio as _asyncio
+    watch_providers_list = await _asyncio.gather(
+        *[tmdb_service.get_watch_providers(r.tmdb_id) for r in payload.recommendations],
+        return_exceptions=True
+    )
+
+    def _parse_providers(raw: object) -> WatchProvidersData | None:
+        """Convert raw TMDB IN-region dict to schema. Returns None on bad data."""
+        if not isinstance(raw, dict) or not raw:
+            return None
+        def _items(key: str) -> list[WatchProviderItem]:
+            return [
+                WatchProviderItem(
+                    provider_id=int(p.get("provider_id", 0)),
+                    provider_name=str(p.get("provider_name", "")),
+                    logo_path=str(p.get("logo_path", "")),
+                )
+                for p in (raw.get(key) or [])
+                if isinstance(p, dict) and p.get("provider_name") and p.get("logo_path")
+            ]
+        return WatchProvidersData(
+            flatrate=_items("flatrate"),
+            rent=_items("rent"),
+            buy=_items("buy"),
+            link=raw.get("link") if isinstance(raw.get("link"), str) else None,
+        )
+
     rec_schemas = []
-    for r in payload.recommendations:
+    for r, raw_wp in zip(payload.recommendations, watch_providers_list):
+        wp = _parse_providers(raw_wp) if not isinstance(raw_wp, BaseException) else None
         rec_schemas.append(MovieRecommendationSchema(
             tmdb_id=r.tmdb_id,
             title=r.title,
@@ -211,7 +267,8 @@ async def get_recommendations(req: RecommendationRequest):
                 collaborative_score=r.score_breakdown.collaborative_score,
                 is_cold_start=r.score_breakdown.is_cold_start,
                 explanation=r.score_breakdown.explanation
-            )
+            ),
+            watch_providers=wp,
         ))
 
     source_schema = SourceMovieSchema(
