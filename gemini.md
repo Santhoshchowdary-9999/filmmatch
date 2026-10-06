@@ -74,7 +74,14 @@ The system supports global cinema while giving explicit prioritization to **Indi
       "default": 10,
       "minimum": 1,
       "maximum": 50
-    }
+    },
+    "year_min": { "type": "integer", "description": "Minimum release year" },
+    "year_max": { "type": "integer", "description": "Maximum release year" },
+    "runtime_max": { "type": "integer", "description": "Maximum runtime in minutes" },
+    "genres": { "type": "array", "items": { "type": "string" }, "description": "List of genres to filter" },
+    "min_rating": { "type": "number", "minimum": 0, "maximum": 10, "description": "Minimum TMDB vote_average" },
+    "language": { "type": "array", "items": { "type": "string" }, "description": "List of language codes, e.g. ['te', 'hi']" },
+    "hidden_gems": { "type": "boolean", "default": false, "description": "Filter for hidden gems: sentiment >= 0.75 and votes < 1000" }
   },
   "required": ["query"]
 }
@@ -200,7 +207,8 @@ The system supports global cinema while giving explicit prioritization to **Indi
       },
       "required": ["content", "sentiment", "collaborative"]
     },
-    "execution_time_ms": { "type": "number" }
+    "execution_time_ms": { "type": "number" },
+    "filter_info": { "type": "string", "description": "Optional informative note when recommendation results are reduced or empty due to active filters" }
   },
   "required": ["source_movie", "recommendations", "applied_weights", "execution_time_ms"]
 }

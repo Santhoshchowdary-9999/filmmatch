@@ -32,6 +32,7 @@ class MovieRecommendation:
     genres: list[str]
     vote_average: float
     vote_count: int
+    runtime: Optional[int] = None
     hybrid_score: float         # 0.0 to 100.0
     match_percentage: int       # 0 to 100%
     score_breakdown: ScoreBreakdown
@@ -108,6 +109,7 @@ class HybridRecommendationEngine:
         candidates: list[MovieMetadata],
         candidate_reviews_map: Optional[dict[int, tuple[list[str], str]]] = None,
         top_k: int = 10,
+        custom_weights: Optional[dict[str, float]] = None,
     ) -> RecommendationResponsePayload:
         """
         Executes end-to-end hybrid recommendation pipeline across candidates.
@@ -181,8 +183,9 @@ class HybridRecommendationEngine:
             # Determine whether this item is cold-start
             is_item_cold_start = (cb_res.collab_score is None) or (not cb_res.is_mapped)
 
+            # Determine weights to use
             if is_item_cold_start:
-                # Cold-Start Formula: 0.65 Content + 0.35 Sentiment + 0.00 Collab
+                # Cold-Start Formula always fixed — ignore custom_weights
                 w_content = self.COLD_START_CONTENT_WEIGHT
                 w_sentiment = self.COLD_START_SENTIMENT_WEIGHT
                 w_collab = self.COLD_START_COLLAB_WEIGHT
@@ -191,10 +194,15 @@ class HybridRecommendationEngine:
                 )
                 applied_collab_val = None
             else:
-                # Standard Formula: 0.50 Content + 0.20 Sentiment + 0.30 Collab
-                w_content = self.DEFAULT_CONTENT_WEIGHT
-                w_sentiment = self.DEFAULT_SENTIMENT_WEIGHT
-                w_collab = self.DEFAULT_COLLAB_WEIGHT
+                # Standard or custom weights
+                if custom_weights:
+                    w_content = custom_weights.get("content", self.DEFAULT_CONTENT_WEIGHT)
+                    w_sentiment = custom_weights.get("sentiment", self.DEFAULT_SENTIMENT_WEIGHT)
+                    w_collab = custom_weights.get("collaborative", self.DEFAULT_COLLAB_WEIGHT)
+                else:
+                    w_content = self.DEFAULT_CONTENT_WEIGHT
+                    w_sentiment = self.DEFAULT_SENTIMENT_WEIGHT
+                    w_collab = self.DEFAULT_COLLAB_WEIGHT
                 final_score = (
                     (w_content * c_res.content_similarity)
                     + (w_sentiment * s_res.sentiment_score)
@@ -235,6 +243,7 @@ class HybridRecommendationEngine:
                 genres=candidate.genres,
                 vote_average=candidate.vote_average,
                 vote_count=candidate.vote_count,
+                runtime=getattr(candidate, "runtime", None),
                 hybrid_score=hybrid_score_100,
                 match_percentage=match_percentage,
                 score_breakdown=breakdown,
@@ -247,13 +256,18 @@ class HybridRecommendationEngine:
 
         execution_ms = round((time.perf_counter() - t0) * 1000, 2)
 
+        # Report which weights were actually used
+        effective_content = custom_weights.get("content", self.DEFAULT_CONTENT_WEIGHT) if custom_weights else self.DEFAULT_CONTENT_WEIGHT
+        effective_sentiment = custom_weights.get("sentiment", self.DEFAULT_SENTIMENT_WEIGHT) if custom_weights else self.DEFAULT_SENTIMENT_WEIGHT
+        effective_collab = custom_weights.get("collaborative", self.DEFAULT_COLLAB_WEIGHT) if custom_weights else self.DEFAULT_COLLAB_WEIGHT
+
         return RecommendationResponsePayload(
             source_movie=source_movie,
             recommendations=top_recommendations,
             applied_weights={
-                "content": self.DEFAULT_CONTENT_WEIGHT,
-                "sentiment": self.DEFAULT_SENTIMENT_WEIGHT,
-                "collaborative": self.DEFAULT_COLLAB_WEIGHT,
+                "content": effective_content,
+                "sentiment": effective_sentiment,
+                "collaborative": effective_collab,
             },
             execution_time_ms=execution_ms,
         )

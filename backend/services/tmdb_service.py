@@ -1101,6 +1101,7 @@ class TMDBService:
             original_language=data.get("original_language") or "en", release_date=data.get("release_date") or "",
             poster_url=self._format_poster(data.get("poster_path")), backdrop_url=self._format_backdrop(data.get("backdrop_path")),
             vote_average=round(float(data.get("vote_average") or 0), 1), vote_count=int(data.get("vote_count") or 0),
+            runtime=int(data["runtime"]) if data.get("runtime") else None,
         )
 
     async def get_movie_reviews(self, tmdb_id: int) -> list[str]:

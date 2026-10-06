@@ -145,13 +145,39 @@ async def get_trending(
 
 @router.post("/recommend", response_model=RecommendationResponse)
 @limiter.limit("30/minute")
-async def get_recommendations(request: Request, req: RecommendationRequest):
+async def get_recommendations(
+    request: Request,
+    req: RecommendationRequest,
+    year_min: Optional[int] = Query(None, ge=1880, le=2100, description="Minimum release year"),
+    year_max: Optional[int] = Query(None, ge=1880, le=2100, description="Maximum release year"),
+    runtime_max: Optional[int] = Query(None, ge=1, le=1000, description="Maximum movie runtime in minutes"),
+    genres: Optional[list[str]] = Query(None, description="Optional genre filters"),
+    min_rating: Optional[float] = Query(None, ge=0.0, le=10.0, description="Minimum rating"),
+    language: Optional[list[str]] = Query(None, description="Optional language code filters"),
+    hidden_gems: Optional[bool] = Query(None, description="Filter for hidden gems"),
+):
     """
-    Generates 10 ranked hybrid movie recommendations based on Content Similarity,
+    Generates ranked hybrid movie recommendations based on Content Similarity,
     Audience Sentiment (NLTK VADER), and Collaborative Filtering (MovieLens).
+    Supports post-scoring filtering (year range, runtime, genres, min rating, language, hidden gems).
     """
     require_engine()
     source_movie: Optional[MovieMetadata] = None
+
+    # Merge body and query filters (body takes precedence if specified)
+    eff_year_min = req.year_min if req.year_min is not None else year_min
+    eff_year_max = req.year_max if req.year_max is not None else year_max
+    eff_runtime_max = req.runtime_max if req.runtime_max is not None else runtime_max
+    eff_genres = req.genres if req.genres is not None else genres
+    eff_min_rating = req.min_rating if req.min_rating is not None else min_rating
+    eff_language = req.language if req.language is not None else language
+    eff_hidden_gems = req.hidden_gems if req.hidden_gems is not None else (hidden_gems or False)
+
+    if eff_year_min is not None and eff_year_max is not None and eff_year_min > eff_year_max:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="year_min cannot be greater than year_max."
+        )
 
     # 1. Resolve source movie
     if req.tmdb_id:
@@ -179,7 +205,6 @@ async def get_recommendations(request: Request, req: RecommendationRequest):
 
     # 2. Fetch candidate pool
     candidates = await tmdb_service.get_candidate_pool(source_movie)
-    # Empty related-film results are not a reason to substitute unrelated titles.
     if not candidates:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -195,8 +220,7 @@ async def get_recommendations(request: Request, req: RecommendationRequest):
         for c in candidates
     }
 
-    # 4. Execute Hybrid Recommendation Engine
-    # Build custom weights dict if provided by the caller (weight-sliders feature)
+    # 4. Execute Hybrid Recommendation Engine (scoring all candidates before filtering)
     custom_w = None
     if req.custom_weights:
         cw = req.custom_weights
@@ -212,15 +236,84 @@ async def get_recommendations(request: Request, req: RecommendationRequest):
         source_movie=source_movie,
         candidates=candidates,
         candidate_reviews_map=reviews_input_map,
-        top_k=req.top_k,
+        top_k=len(candidates),
         custom_weights=custom_w,
     )
 
-    # Format response strictly matching Pydantic schema
-    # Fetch watch providers concurrently for all top-k winners.
+    # 5. Apply Filters STRICTLY AFTER Scoring
+    filter_genres: list[str] = []
+    if eff_genres:
+        for g in eff_genres:
+            for sub in g.split(","):
+                if sub.strip():
+                    filter_genres.append(sub.strip().lower())
+
+    filter_langs: list[str] = []
+    if eff_language:
+        for l in eff_language:
+            for sub in l.split(","):
+                if sub.strip():
+                    filter_langs.append(sub.strip().lower())
+
+    def _matches_filter(r) -> bool:
+        if eff_year_min is not None or eff_year_max is not None:
+            movie_year = None
+            if r.release_date and len(r.release_date) >= 4 and r.release_date[:4].isdigit():
+                movie_year = int(r.release_date[:4])
+            if eff_year_min is not None and (movie_year is None or movie_year < eff_year_min):
+                return False
+            if eff_year_max is not None and (movie_year is None or movie_year > eff_year_max):
+                return False
+
+        if eff_runtime_max is not None and r.runtime is not None:
+            if r.runtime > eff_runtime_max:
+                return False
+
+        if filter_genres:
+            movie_genres_lower = {g.lower() for g in r.genres}
+            if not any(fg in movie_genres_lower for fg in filter_genres):
+                return False
+
+        if eff_min_rating is not None:
+            if r.vote_average < eff_min_rating:
+                return False
+
+        if filter_langs:
+            if r.original_language.lower() not in filter_langs:
+                return False
+
+        if eff_hidden_gems:
+            min_sentiment = settings.HIDDEN_GEMS_MIN_SENTIMENT
+            max_votes = settings.HIDDEN_GEMS_MAX_VOTES
+            if not (r.score_breakdown.sentiment_score >= min_sentiment and r.vote_count < max_votes):
+                return False
+
+        return True
+
+    has_active_filters = (
+        eff_year_min is not None
+        or eff_year_max is not None
+        or eff_runtime_max is not None
+        or bool(filter_genres)
+        or eff_min_rating is not None
+        or bool(filter_langs)
+        or bool(eff_hidden_gems)
+    )
+
+    filtered_candidates = [r for r in payload.recommendations if _matches_filter(r)] if has_active_filters else payload.recommendations
+    final_recommendations = filtered_candidates[:req.top_k]
+
+    filter_info: Optional[str] = None
+    if has_active_filters:
+        if len(final_recommendations) == 0:
+            filter_info = "No movies matched your current filter criteria. Try adjusting or clearing filters."
+        elif len(filtered_candidates) < req.top_k:
+            filter_info = f"Showing {len(final_recommendations)} of {req.top_k} requested recommendations matching your active filters."
+
+    # Fetch watch providers concurrently for filtered winners
     import asyncio as _asyncio
     watch_providers_list = await _asyncio.gather(
-        *[tmdb_service.get_watch_providers(r.tmdb_id) for r in payload.recommendations],
+        *[tmdb_service.get_watch_providers(r.tmdb_id) for r in final_recommendations],
         return_exceptions=True
     )
 
@@ -246,7 +339,7 @@ async def get_recommendations(request: Request, req: RecommendationRequest):
         )
 
     rec_schemas = []
-    for r, raw_wp in zip(payload.recommendations, watch_providers_list):
+    for r, raw_wp in zip(final_recommendations, watch_providers_list):
         wp = _parse_providers(raw_wp) if not isinstance(raw_wp, BaseException) else None
         rec_schemas.append(MovieRecommendationSchema(
             tmdb_id=r.tmdb_id,
@@ -259,6 +352,7 @@ async def get_recommendations(request: Request, req: RecommendationRequest):
             genres=r.genres,
             vote_average=r.vote_average,
             vote_count=r.vote_count,
+            runtime=r.runtime,
             hybrid_score=r.hybrid_score,
             match_percentage=r.match_percentage,
             score_breakdown=ScoreBreakdownSchema(
@@ -286,6 +380,7 @@ async def get_recommendations(request: Request, req: RecommendationRequest):
         recommendations=rec_schemas,
         applied_weights=payload.applied_weights,
         execution_time_ms=payload.execution_time_ms,
+        filter_info=filter_info,
         provenance=report(empty=not rec_schemas),
         signal_provenance={
             "content": "derived from the movie metadata described in provenance",

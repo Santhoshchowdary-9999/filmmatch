@@ -4,6 +4,7 @@ Loads environment settings securely via Pydantic BaseSettings.
 """
 import os
 from pathlib import Path
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Root directory of the repository
@@ -43,6 +44,10 @@ class Settings(BaseSettings):
     # Paths
     DATA_DIR: Path = ROOT_DIR / "data" / "movielens"
 
+    # Hidden Gems Discovery Thresholds
+    HIDDEN_GEMS_MIN_SENTIMENT: float = 0.75
+    HIDDEN_GEMS_MAX_VOTES: int = 1000
+
     model_config = SettingsConfigDict(
         env_file=str(ROOT_DIR / ".env"),
         env_file_encoding="utf-8",
@@ -51,6 +56,35 @@ class Settings(BaseSettings):
 
     def get_allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.ALLOWED_ORIGINS.split(",") if origin.strip()]
+
+    @model_validator(mode="after")
+    def validate_weights(self) -> "Settings":
+        for name, w_cont, w_sent, w_collab in [
+            (
+                "DEFAULT",
+                self.DEFAULT_CONTENT_WEIGHT,
+                self.DEFAULT_SENTIMENT_WEIGHT,
+                self.DEFAULT_COLLAB_WEIGHT,
+            ),
+            (
+                "COLD_START",
+                self.COLD_START_CONTENT_WEIGHT,
+                self.COLD_START_SENTIMENT_WEIGHT,
+                self.COLD_START_COLLAB_WEIGHT,
+            ),
+        ]:
+            if any(w < 0.0 for w in (w_cont, w_sent, w_collab)):
+                raise ValueError(
+                    f"Configured {name} weights must be non-negative: "
+                    f"content={w_cont}, sentiment={w_sent}, collab={w_collab}"
+                )
+            total = w_cont + w_sent + w_collab
+            if abs(total - 1.0) > 1e-4:
+                raise ValueError(
+                    f"Configured {name} weights must sum to 1.0 (got {total:.4f}): "
+                    f"content={w_cont}, sentiment={w_sent}, collab={w_collab}"
+                )
+        return self
 
 
 settings = Settings()

@@ -47,6 +47,7 @@ export interface MovieRecommendation {
   genres: string[];
   vote_average: number;
   vote_count: number;
+  runtime?: number | null;
   hybrid_score: number;
   match_percentage: number;
   score_breakdown: ScoreBreakdown;
@@ -79,6 +80,17 @@ export interface RecommendationResponse {
     collaborative: number;
   };
   execution_time_ms: number;
+  filter_info?: string | null;
+}
+
+export interface RecommendationFilters {
+  year_min?: number;
+  year_max?: number;
+  runtime_max?: number;
+  genres?: string[];
+  min_rating?: number;
+  language?: string[];
+  hidden_gems?: boolean;
 }
 
 export interface MovieSearchItem {

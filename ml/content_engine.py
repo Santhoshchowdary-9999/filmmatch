@@ -39,6 +39,7 @@ class MovieMetadata:
     backdrop_url: str = ""
     vote_average: float = 0.0
     vote_count: int = 0
+    runtime: Optional[int] = None
 
 
 @dataclass

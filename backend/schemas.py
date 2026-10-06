@@ -4,7 +4,7 @@ Strictly implementing the JSON data schemas defined in gemini.md.
 """
 import re
 from typing import Optional, Literal, Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ProvenanceSchema(BaseModel):
@@ -28,6 +28,13 @@ class RecommendationRequest(BaseModel):
     tmdb_id: Optional[int] = Field(None, description="Optional explicit TMDB ID if selected from autocomplete")
     top_k: int = Field(10, description="Number of recommendations to return", ge=1, le=50)
     custom_weights: Optional[CustomWeights] = Field(None, description="Optional custom hybrid weights (must not all be 0)")
+    year_min: Optional[int] = Field(None, ge=1880, le=2100, description="Minimum release year")
+    year_max: Optional[int] = Field(None, ge=1880, le=2100, description="Maximum release year")
+    runtime_max: Optional[int] = Field(None, ge=1, le=1000, description="Maximum movie runtime in minutes")
+    genres: Optional[list[str]] = Field(None, description="List of genre names to include")
+    min_rating: Optional[float] = Field(None, ge=0.0, le=10.0, description="Minimum TMDB vote_average (0-10)")
+    language: Optional[list[str]] = Field(None, description="List of ISO 639-1 language codes, e.g. ['te', 'hi']")
+    hidden_gems: Optional[bool] = Field(False, description="Filter for hidden gems: sentiment_score >= threshold and vote_count < threshold")
 
     @field_validator("query")
     @classmethod
@@ -41,6 +48,12 @@ class RecommendationRequest(BaseModel):
         if len(sanitized) > 200:
             raise ValueError("Query exceeds maximum allowed length of 200 characters.")
         return sanitized
+
+    @model_validator(mode="after")
+    def validate_year_range(self) -> "RecommendationRequest":
+        if self.year_min is not None and self.year_max is not None and self.year_min > self.year_max:
+            raise ValueError("year_min cannot be greater than year_max.")
+        return self
 
 
 class WatchProviderItem(BaseModel):
@@ -78,6 +91,7 @@ class MovieRecommendationSchema(BaseModel):
     genres: list[str]
     vote_average: float
     vote_count: int
+    runtime: Optional[int] = Field(None, description="Movie runtime in minutes")
     hybrid_score: float = Field(..., description="Overall score out of 100")
     match_percentage: int = Field(..., description="Normalized integer percentage 0-100%")
     score_breakdown: ScoreBreakdownSchema
@@ -102,6 +116,7 @@ class RecommendationResponse(BaseModel):
     recommendations: list[MovieRecommendationSchema]
     applied_weights: dict[str, float]
     execution_time_ms: float
+    filter_info: Optional[str] = Field(None, description="Optional note when recommendations are filtered")
     provenance: ProvenanceSchema
     signal_provenance: dict[str, Any] = Field(default_factory=dict)
 
