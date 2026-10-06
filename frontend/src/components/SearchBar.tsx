@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { Search, Loader2, X, Sparkles, Star, Film, HelpCircle } from "lucide-react";
+import { Search, Loader2, X, Star, HelpCircle } from "lucide-react";
 import { MovieSearchItem, MovieSearchResponse } from "@/types";
 import { fetchFromApi, describeProvenance, requestError } from "@/utils/api";
 import { MoviePoster } from "./MoviePoster";
@@ -35,29 +35,26 @@ export const SearchBar: React.FC<SearchBarProps> = ({
     { title: "Dangal", id: 360814, lang: "Hindi" },
     { title: "Pushpa", id: 690957, lang: "Telugu" },
     { title: "Inception", id: 27205, lang: "English" },
-    { title: "Gangs of Wasseypur", id: 89366, lang: "Hindi" },
     { title: "Parasite", id: 496243, lang: "Korean" },
-    { title: "Interstellar", id: 157336, lang: "English" },
     { title: "Kantara", id: 1075794, lang: "Kannada" },
   ];
 
-  // Global '/' keyboard shortcut to focus search input
+  // Global '/' keyboard shortcut
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        const activeTag = document.activeElement?.tagName.toLowerCase();
-        if (activeTag !== "input" && activeTag !== "textarea" && !(document.activeElement as HTMLElement)?.isContentEditable) {
+        const tag = document.activeElement?.tagName.toLowerCase();
+        if (tag !== "input" && tag !== "textarea" && !(document.activeElement as HTMLElement)?.isContentEditable) {
           e.preventDefault();
           inputRef.current?.focus();
         }
       }
     };
-
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, [inputRef]);
 
-  // Abort obsolete searches; a failed request is not an empty search result.
+  // Debounced search
   useEffect(() => {
     const controller = new AbortController();
     setResults([]);
@@ -66,16 +63,16 @@ export const SearchBar: React.FC<SearchBarProps> = ({
     setSearchStatus("");
     setHasSearched(false);
     setIsOpen(false);
-    if (!query.trim()) {
-      setIsLoading(false);
-      return;
-    }
+    if (!query.trim()) { setIsLoading(false); return; }
     setIsLoading(true);
     const timer = setTimeout(async () => {
       try {
-        const data = await fetchFromApi<MovieSearchResponse>(`/api/search?q=${encodeURIComponent(query.trim())}`, { signal: controller.signal });
+        const data = await fetchFromApi<MovieSearchResponse>(
+          `/api/search?q=${encodeURIComponent(query.trim())}`,
+          { signal: controller.signal }
+        );
         if (controller.signal.aborted) return;
-        if (!Array.isArray(data.results)) throw new Error("The backend returned invalid search results.");
+        if (!Array.isArray(data.results)) throw new Error("Invalid search results.");
         setResults(data.results);
         setSearchStatus(describeProvenance(data.provenance));
         setHasSearched(true);
@@ -92,31 +89,23 @@ export const SearchBar: React.FC<SearchBarProps> = ({
     return () => { clearTimeout(timer); controller.abort(); };
   }, [query]);
 
-  // Click outside listener
+  // Click outside
   useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
+    const handler = (e: MouseEvent) => {
       if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(e.target as Node) &&
-        inputRef.current &&
-        !inputRef.current.contains(e.target as Node)
-      ) {
-        setIsOpen(false);
-      }
+        dropdownRef.current && !dropdownRef.current.contains(e.target as Node) &&
+        inputRef.current && !inputRef.current.contains(e.target as Node)
+      ) setIsOpen(false);
     };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
   }, [inputRef]);
 
-  // Keyboard navigation
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!isOpen || results.length === 0) {
-      if (e.key === "Enter" && query.trim() && !isSubmitting) {
-        onSelectMovie(0, query.trim());
-      }
+      if (e.key === "Enter" && query.trim() && !isSubmitting) onSelectMovie(0, query.trim());
       return;
     }
-
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setSelectedIndex(prev => (prev < results.length - 1 ? prev + 1 : 0));
@@ -143,131 +132,145 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   };
 
   return (
-    <div className="w-full max-w-3xl mx-auto relative">
-      {/* Search Input Box */}
-      <div className="relative group">
-        <div className="absolute -inset-1 rounded-2xl bg-gradient-to-r from-indigo-500/30 via-violet-500/20 to-cyan-500/30 blur-lg opacity-75 group-hover:opacity-100 transition duration-300 pointer-events-none" />
-        
-        <div className="relative flex items-center bg-surface-1/90 border border-white/[0.12] group-hover:border-indigo-500/50 rounded-2xl shadow-2xl transition-all duration-200">
-          <div className="pl-5 text-gray-400">
-            <Search className="w-5 h-5 group-hover:text-indigo-400 transition-colors duration-200" />
-          </div>
-
-          <input
-            ref={inputRef}
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onFocus={() => {
-              if (results.length > 0) setIsOpen(true);
-            }}
-            placeholder="Search any movie (e.g. 'RRR', 'Pushpa', 'Dangal', 'Inception')..."
-            className="w-full py-4 pl-4 pr-12 bg-transparent text-white placeholder-gray-400 text-base md:text-lg focus:outline-none"
-            aria-label="Search movies for hybrid recommendation"
-          />
-
-          <div className="pr-4 flex items-center space-x-2">
-            {isLoading ? (
-              <Loader2 className="w-5 h-5 text-indigo-400 animate-spin" />
-            ) : query ? (
-              <button
-                onClick={() => {
-                  setQuery("");
-                  setResults([]);
-                  setIsOpen(false);
-                  setHasSearched(false);
-                }}
-                className="p-1 rounded-full text-gray-400 hover:text-white hover:bg-white/[0.1] transition-colors"
-                aria-label="Clear search query"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            ) : null}
-
-            <button
-              onClick={() => {
-                if (query.trim() && !isSubmitting) onSelectMovie(0, query.trim());
-              }}
-              disabled={isSubmitting || !query.trim()}
-              className="px-4 sm:px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 disabled:opacity-60 disabled:cursor-not-allowed text-white text-sm font-semibold shadow-glow-indigo transition-all duration-200 flex items-center space-x-2"
-              aria-label="Get movie recommendations"
-            >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="w-4 h-4 text-white animate-spin" />
-                  <span>Matching...</span>
-                </>
-              ) : (
-                <span>Recommend</span>
-              )}
-            </button>
-          </div>
+    <div className="w-full relative">
+      {/* ── Input row ── */}
+      <div className="flex items-stretch gap-0 rounded-xl overflow-hidden border border-white/[0.12] bg-surface-1 focus-within:border-[rgba(240,180,41,0.5)] transition-colors duration-200 shadow-card">
+        {/* Search icon */}
+        <div className="flex items-center pl-4 pr-2 text-[#5C5A58]">
+          <Search className="w-4.5 h-4.5" style={{ width: "18px", height: "18px" }} />
         </div>
+
+        {/* Input */}
+        <input
+          ref={inputRef}
+          type="text"
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onFocus={() => { if (results.length > 0) setIsOpen(true); }}
+          placeholder="Search a movie…"
+          className="flex-1 py-3.5 pr-2 bg-transparent text-warm-white placeholder-[#5C5A58] text-base focus:outline-none min-w-0"
+          aria-label="Search movies for hybrid recommendation"
+          aria-autocomplete="list"
+          aria-expanded={isOpen}
+          aria-controls="search-dropdown"
+          role="combobox"
+        />
+
+        {/* Clear */}
+        {query && !isLoading && (
+          <button
+            onClick={() => { setQuery(""); setResults([]); setIsOpen(false); setHasSearched(false); }}
+            className="flex items-center px-2 text-[#5C5A58] hover:text-[#A8A5A0] transition-colors"
+            aria-label="Clear search"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+
+        {/* Loading spinner */}
+        {isLoading && (
+          <div className="flex items-center px-3 text-[#5C5A58]">
+            <Loader2 className="w-4 h-4 animate-spin" />
+          </div>
+        )}
+
+        {/* ── Recommend button (amber CTA) ── */}
+        <button
+          onClick={() => { if (query.trim() && !isSubmitting) onSelectMovie(0, query.trim()); }}
+          disabled={isSubmitting || !query.trim()}
+          className="btn-amber flex items-center gap-2 px-5 py-3.5 text-sm font-bold rounded-none rounded-r-xl shrink-0"
+          aria-label="Get movie recommendations"
+        >
+          {isSubmitting ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span className="hidden sm:inline">Matching…</span>
+            </>
+          ) : (
+            <span>Recommend</span>
+          )}
+        </button>
       </div>
 
-      {/* Quick Search Chips */}
-      <div className="mt-3 flex items-center flex-wrap gap-2 text-xs text-gray-400">
-        <span className="font-medium flex items-center space-x-1 text-gray-500">
-          <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-          <span>Popular Searches:</span>
-        </span>
-        {quickPills.map((pill) => (
+      {/* ── Quick pill suggestions ── */}
+      <div className="mt-2.5 flex items-center gap-1.5 overflow-x-auto scrollbar-none pb-0.5">
+        <span className="shrink-0 text-[11px] text-[#5C5A58] font-medium">Try:</span>
+        {quickPills.map(pill => (
           <button
             key={pill.id}
             onClick={() => handleSelect(pill.id, pill.title)}
-            className="px-2.5 py-1 rounded-lg bg-surface-2/60 hover:bg-indigo-600/20 border border-white/[0.06] hover:border-indigo-500/40 text-gray-300 hover:text-white transition-all duration-150"
+            className="shrink-0 px-2.5 py-1 rounded-lg text-xs font-medium text-[#A8A5A0] hover:text-[#F0EDE8] bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] hover:border-white/[0.1] transition-all duration-150"
           >
-            {pill.title} <span className="text-[10px] text-gray-500">({pill.lang})</span>
+            {pill.title}
           </button>
         ))}
       </div>
 
-      {/* Autocomplete Dropdown */}
+      {/* ── Autocomplete dropdown ── */}
       {isOpen && (
         <div
+          id="search-dropdown"
           ref={dropdownRef}
-          className="absolute left-0 right-0 mt-2 rounded-2xl glass-dropdown shadow-2xl z-50 overflow-hidden max-h-[400px] overflow-y-auto"
+          role="listbox"
+          aria-label="Movie search suggestions"
+          className="absolute left-0 right-0 mt-2 rounded-xl glass-dropdown shadow-modal z-50 overflow-hidden max-h-[360px] overflow-y-auto"
         >
-          {searchStatus && <p role="status" className="px-3 py-2 text-xs text-gray-400">{searchStatus}</p>}
+          {searchStatus && (
+            <p role="status" className="px-3 py-2 text-[11px] text-[#5C5A58] border-b border-white/[0.06]">
+              {searchStatus}
+            </p>
+          )}
           {searchError ? (
-            <p role="alert" className="p-6 text-sm text-red-300">Search unavailable: {searchError}</p>
+            <p role="alert" className="p-5 text-sm text-red-400">
+              Search unavailable: {searchError}
+            </p>
           ) : results.length > 0 ? (
-            <div className="p-2 space-y-1">
-              <div className="px-3 py-1.5 text-[11px] font-bold text-gray-400 uppercase tracking-wider flex items-center justify-between">
-                <span>Movie Suggestions</span>
-                <span className="text-gray-500 font-normal">Use ↑↓ keys & Enter</span>
+            <div className="p-1.5 space-y-0.5">
+              <div className="px-3 py-1.5 text-[10px] font-bold text-[#5C5A58] uppercase tracking-wider flex justify-between">
+                <span>Results</span>
+                <span className="font-normal">↑↓ Navigate · Enter Select</span>
               </div>
-              {results.map((item, index) => {
-                const isHighlighted = selectedIndex === index;
+              {results.map((item, idx) => {
+                const highlighted = selectedIndex === idx;
                 return (
                   <div
-                    key={item.tmdb_id || index}
+                    key={item.tmdb_id || idx}
+                    role="option"
+                    aria-selected={highlighted}
                     onClick={() => handleSelect(item.tmdb_id, item.title)}
-                    onMouseEnter={() => setSelectedIndex(index)}
-                    className={`flex items-center space-x-3 p-2.5 rounded-xl cursor-pointer transition-all duration-150 ${
-                      isHighlighted ? "bg-indigo-600/30 text-white border border-indigo-500/40" : "hover:bg-white/[0.06] text-gray-200"
+                    onMouseEnter={() => setSelectedIndex(idx)}
+                    className={`flex items-center gap-3 p-2.5 rounded-lg cursor-pointer transition-all duration-100 ${
+                      highlighted
+                        ? "bg-white/[0.07] text-warm-white"
+                        : "hover:bg-white/[0.04] text-[#C8C5C0]"
                     }`}
                   >
-                    <div className="w-10 h-14 rounded-lg overflow-hidden bg-surface-3 flex-shrink-0">
+                    {/* Mini poster */}
+                    <div className="w-8 h-12 rounded-md overflow-hidden bg-surface-3 shrink-0">
                       <MoviePoster src={item.poster_url} alt={item.title} />
                     </div>
+
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center space-x-2">
-                        <span className="font-bold text-sm text-white truncate font-sans">{item.title}</span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-semibold text-sm text-warm-white truncate">{item.title}</span>
                         {item.release_date && (
-                          <span className="text-xs text-gray-400 font-mono">({item.release_date.slice(0, 4)})</span>
+                          <span className="text-[11px] text-[#5C5A58] font-mono shrink-0">
+                            {item.release_date.slice(0, 4)}
+                          </span>
                         )}
-                        <span className="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded bg-surface-2 text-indigo-300 border border-white/[0.06]">
+                        <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-surface-2 text-[#A8A5A0] border border-white/[0.06] shrink-0">
                           {item.original_language}
                         </span>
                       </div>
-                      <div className="flex items-center space-x-2 text-xs text-gray-400 mt-1">
-                        {item.genres && item.genres.length > 0 && <span>{item.genres.slice(0, 2).join(", ")}</span>}
+                      <div className="flex items-center gap-2 mt-0.5 text-xs text-[#5C5A58]">
+                        {item.genres && item.genres.length > 0 && (
+                          <span>{item.genres.slice(0, 2).join(", ")}</span>
+                        )}
                         {item.vote_average > 0 && (
-                          <span className="flex items-center space-x-1 text-cinema-gold">
+                          <span className="flex items-center gap-1 text-gold" style={{ color: "var(--gold)" }}>
                             <Star className="w-3 h-3 fill-current" />
-                            <span>{item.vote_average.toFixed(1)}</span>
+                            {item.vote_average.toFixed(1)}
                           </span>
                         )}
                       </div>
@@ -277,14 +280,16 @@ export const SearchBar: React.FC<SearchBarProps> = ({
               })}
             </div>
           ) : hasSearched && !isLoading ? (
-            /* Movie Not Found Friendly State */
-            <div className="p-6 text-center text-gray-300 space-y-2">
-              <div className="w-10 h-10 rounded-2xl bg-surface-2 border border-white/[0.08] flex items-center justify-center mx-auto text-indigo-400 mb-2">
-                <HelpCircle className="w-5 h-5" />
+            <div className="p-6 text-center space-y-2">
+              <div className="w-9 h-9 rounded-xl bg-surface-2 border border-white/[0.07] flex items-center justify-center mx-auto text-[#5C5A58]">
+                <HelpCircle className="w-4.5 h-4.5" style={{ width: "18px", height: "18px" }} />
               </div>
-              <h4 className="text-sm font-bold text-white">Movie not found</h4>
-              <p className="text-xs text-gray-400 max-w-sm mx-auto">
-                No matching film found for &ldquo;<span className="text-indigo-300">{query}</span>&rdquo;. Try searching another movie title like <button type="button" onClick={() => handleSelect(579974, "RRR")} className="text-cyan-300 underline font-medium">RRR</button>, <button type="button" onClick={() => handleSelect(360814, "Dangal")} className="text-cyan-300 underline font-medium">Dangal</button>, or <button type="button" onClick={() => handleSelect(27205, "Inception")} className="text-cyan-300 underline font-medium">Inception</button>.
+              <h4 className="text-sm font-semibold text-warm-white">No results for &ldquo;{query}&rdquo;</h4>
+              <p className="text-xs text-[#5C5A58]">
+                Try{" "}
+                <button type="button" onClick={() => handleSelect(579974, "RRR")} className="text-amber underline" style={{ color: "var(--amber)" }}>RRR</button>,{" "}
+                <button type="button" onClick={() => handleSelect(27205, "Inception")} className="text-amber underline" style={{ color: "var(--amber)" }}>Inception</button>, or{" "}
+                <button type="button" onClick={() => handleSelect(496243, "Parasite")} className="text-amber underline" style={{ color: "var(--amber)" }}>Parasite</button>.
               </p>
             </div>
           ) : null}

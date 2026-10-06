@@ -3,8 +3,11 @@
 .env.local
 .env.*.local
 *.env
+frontend/.env*
+!.env.example
+!frontend/.env.example
 
-# Python
+# Python & Build Artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -13,14 +16,12 @@ __pycache__/
 env/
 venv/
 .venv/
-build/
+/backend/build/
 develop-eggs/
-dist/
-downloads/
+/dist/
+/backend/dist/
 eggs/
 .eggs/
-lib/
-lib64/
 parts/
 sdist/
 var/
@@ -29,15 +30,31 @@ wheels/
 .installed.cfg
 *.egg
 
+# Testing & Linting Caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ML Data, Precomputed Matrices & Caches
+*.pkl
+*.npz
+*.joblib
+data/cache/
+data/movielens/
+
 # Node / Frontend
-node_modules/
-.next/
-out/
-dist/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/dist/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+
+# IDE & Editor Files
+.vscode/
+.idea/
 
 # OS / Temporary
 .tmp/

@@ -7,42 +7,75 @@ module.exports = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ["Inter", "system-ui", "-apple-system", "BlinkMacSystemFont", "Segoe UI", "sans-serif"],
+        display: ["Outfit", "Inter", "system-ui", "sans-serif"],
+        mono: ["JetBrains Mono", "Fira Code", "monospace"],
+      },
       colors: {
-        obsidian: {
-          DEFAULT: "#07080C",
-          50: "#1A1D2B",
-          100: "#141724",
-          200: "#0F121C",
-          300: "#0B0D15",
-          400: "#07080C",
+        // Deep cinematic background
+        charcoal: {
+          DEFAULT: "#0B0B0D",
+          50: "#1C1C20",
+          100: "#161618",
+          200: "#111113",
+          300: "#0E0E10",
+          400: "#0B0B0D",
         },
+        // Surface system (warm-tinted dark)
         surface: {
-          1: "#0F121C",
-          2: "#161B2A",
-          3: "#1F263B",
-          card: "rgba(15, 18, 28, 0.85)",
-          glass: "rgba(22, 27, 42, 0.65)",
+          1: "#141416",
+          2: "#1C1C20",
+          3: "#252528",
+          card: "rgba(20, 20, 22, 0.92)",
+          glass: "rgba(28, 28, 32, 0.70)",
         },
+        // Legacy obsidian (kept for backward compat)
+        obsidian: {
+          DEFAULT: "#0B0B0D",
+          50: "#1C1C20",
+          100: "#161618",
+          200: "#111113",
+          300: "#0E0E10",
+          400: "#0B0B0D",
+        },
+        // Cinema accent palette
         cinema: {
-          violet: "#8B5CF6",
-          indigo: "#6366F1",
-          cyan: "#38BDF8",
-          blue: "#3B82F6",
-          gold: "#F59E0B",
+          // Warm gold — ratings, metadata, scores ONLY
+          gold: "#D9A441",
+          "gold-light": "#E8B96A",
+          // Brighter amber — primary CTAs, buttons, active states ONLY
+          amber: "#F0B429",
+          "amber-hover": "#F5C04A",
+          // Muted violet — AI-related elements ONLY
+          violet: "#7C5CBF",
+          "violet-light": "#9B7DD4",
+          // Supporting
+          indigo: "#5B5BD6",
+          cyan: "#22D3EE",
           emerald: "#10B981",
         },
       },
       backgroundImage: {
         "gradient-radial": "radial-gradient(var(--tw-gradient-stops))",
-        "cinema-glow": "radial-gradient(circle at 50% -20%, rgba(99, 102, 241, 0.25), transparent 70%)",
-        "card-gradient": "linear-gradient(180deg, rgba(22, 27, 42, 0.6) 0%, rgba(15, 18, 28, 0.95) 100%)",
+        "cinema-vignette": "radial-gradient(ellipse at center, transparent 40%, rgba(11,11,13,0.85) 100%)",
+        "hero-gradient": "linear-gradient(to top, #0B0B0D 0%, #0B0B0D 15%, rgba(11,11,13,0.85) 50%, rgba(11,11,13,0.3) 80%, transparent 100%)",
+        "card-fade": "linear-gradient(to top, rgba(20,20,22,1) 0%, rgba(20,20,22,0.6) 40%, transparent 100%)",
+        "film-grain": "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E\")",
       },
       boxShadow: {
-        "glow-violet": "0 0 25px -5px rgba(139, 92, 246, 0.35)",
-        "glow-indigo": "0 0 30px -5px rgba(99, 102, 241, 0.4)",
-        "glow-card": "0 10px 30px -10px rgba(0, 0, 0, 0.7), 0 0 15px rgba(99, 102, 241, 0.15)",
+        "card": "0 4px 24px -4px rgba(0,0,0,0.7)",
+        "card-hover": "0 12px 40px -8px rgba(0,0,0,0.85)",
+        "poster": "0 8px 32px -4px rgba(0,0,0,0.75)",
+        "amber-glow": "0 0 20px -4px rgba(240,180,41,0.25)",
+        "amber-btn": "0 4px 16px -2px rgba(240,180,41,0.3)",
+        "modal": "0 24px 80px -12px rgba(0,0,0,0.9)",
+        "nav": "0 1px 0 rgba(255,255,255,0.05)",
+      },
+      screens: {
+        xs: "480px",
       },
     },
   },
   plugins: [],
-}
+};

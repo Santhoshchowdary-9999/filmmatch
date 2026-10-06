@@ -1,93 +1,207 @@
-# FilmMatchAI
+# FilmMatch AI — Intelligent Hybrid Movie Recommendation Platform
 
+FilmMatch AI is a full-stack, transparent, and explainable movie recommendation engine combining **Content-Based Story DNA (TF-IDF)**, **Audience Sentiment Analysis (NLTK VADER)**, and **Collaborative Filtering (MovieLens)**. It delivers ranked recommendations with complete mathematical breakdown, giving explicit first-class support to Indian regional cinema (**Telugu `te`, Hindi `hi`, Tamil `ta`, Malayalam `ml`, Kannada `kn`**) alongside global cinema.
 
+---
 
-## Getting started
+## 📽️ Features
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+- **Tripartite Hybrid Recommendation Engine**:
+  - **Narrative DNA (Content Similarity)**: Metadata soup combining directors, top cast, genres, plot overview, thematic keywords, and language anchors with TF-IDF bi-grams and cosine similarity.
+  - **Audience Sentiment Pulse (VADER)**: Analyzes real TMDB viewer reviews (not professional critics) to quantify authentic audience reception normalized to `[0.0, 1.0]`.
+  - **Behavioral Community Affinity (MovieLens CF)**: Adjusted item-item cosine similarity using mean-centered ratings from 100,000+ ratings across 610 users, verified strictly through `links.csv`.
+- **Explainability & Transparency**:
+  - Every recommendation includes an exact score breakdown (content similarity, audience sentiment, collaborative score) and human-readable explanation rationale.
+- **Cold-Start Resilience**:
+  - Automated detection of unmapped regional or brand-new titles, dynamically reweighting to Content ($0.65$) + Sentiment ($0.35$) with clear badge indicators.
+- **Cinematic Dark UI**:
+  - Obsidian-grade dark interface built with Next.js 14, Tailwind CSS, Framer Motion, and Lucide icons.
+- **Production Hardened Backend**:
+  - FastAPI service with strict Pydantic schemas, `slowapi` rate limiting, exponential backoff retries, and comprehensive error resilience.
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+---
 
-## Add your files
+## 📐 Architecture & System Topology
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+```mermaid
+graph TD
+    Client["Client: Next.js 14 Web App<br/>(Obsidian Dark Theme / Tailwind / Framer Motion)"]
+    API["FastAPI REST Service<br/>(SlowAPI Rate Limiter / Pydantic v2 / CORS)"]
+    
+    subgraph Core Recommendation Engines
+        CE["Content Engine<br/>(TF-IDF + Metadata Soup)"]
+        SE["Sentiment Engine<br/>(NLTK VADER on TMDB Reviews)"]
+        CF["Collaborative Engine<br/>(MovieLens Adjusted Cosine)"]
+    end
+    
+    Hybrid["Hybrid Fusion Engine<br/>Standard: 50% Content / 20% Sentiment / 30% Collab<br/>Cold Start: 65% Content / 35% Sentiment"]
+    TMDB["TMDB API v3<br/>(Async HTTPX with Retries)"]
+    MLData["MovieLens Dataset<br/>(data/movielens/ strictly uncommitted)"]
+    Postgres[("PostgreSQL DB<br/>Target Database")]
 
+    Client -->|HTTP /api/search & /api/recommend| API
+    API --> CE
+    API --> SE
+    API --> CF
+    CE --> Hybrid
+    SE --> Hybrid
+    CF --> Hybrid
+    Hybrid --> API
+    API -->|Async metadata & reviews| TMDB
+    CF -->|Read ratings & links| MLData
+    API -.-> Postgres
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/shanthikumarmethku-hue/filmmatchai.git
-git branch -M main
-git push -uf origin main
+
+---
+
+## 📋 Prerequisites
+
+- **Python**: `>= 3.11` (Tested on Python 3.12 / 3.14)
+- **Node.js**: `>= 18.17.0` (LTS recommended, e.g. Node 20 or 24)
+- **Package Managers**: `pip` (or `uv`) and `npm`
+- **TMDB API Credentials**: Free API Key or Read Access Token from [The Movie Database](https://www.themoviedb.org/documentation/api)
+
+---
+
+## ⚙️ Environment Variables
+
+Copy `.env.example` to `.env` in the project root:
+
+```bash
+cp .env.example .env
 ```
 
-## Integrate with your tools
+| Variable Name | Required | Default | Description |
+| :--- | :---: | :---: | :--- |
+| `TMDB_API_KEY` | Conditional | `""` | TMDB v3 API Key (either Key or Read Token required) |
+| `TMDB_READ_ACCESS_TOKEN` | Conditional | `""` | TMDB v4 Bearer Read Access Token |
+| `DATABASE_URL` | Optional | `""` | PostgreSQL connection URL (e.g., `postgresql+asyncpg://...`) |
+| `ENVIRONMENT` | No | `development` | Environment mode (`development` / `production`) |
+| `BACKEND_PORT` | No | `8000` | Port for the FastAPI server |
+| `FRONTEND_PORT` | No | `3000` | Port for the Next.js dev server |
+| `RATE_LIMIT_PER_MINUTE` | No | `60` | SlowAPI rate limit per client IP |
 
-* [Set up project integrations](https://gitlab.com/shanthikumarmethku-hue/filmmatchai/-/settings/integrations)
+> **Security Note**: Never commit `.env` or expose API keys. The `.gitignore` prevents tracking `.env` files.
 
-## Collaborate with your team
+---
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+## 📥 Ingesting MovieLens Dataset (Do Not Commit)
 
-## Test and Deploy
+MovieLens data is required for the collaborative filtering engine. It is strictly excluded from version control.
 
-Use the built-in continuous integration in GitLab.
+1. Download the `ml-latest-small.zip` dataset (~1 MB) from GroupLens:
+   ```bash
+   # Linux/macOS:
+   curl -O https://files.grouplens.org/datasets/movielens/ml-latest-small.zip
+   unzip -q ml-latest-small.zip -d data/
+   mv data/ml-latest-small data/movielens
+   rm ml-latest-small.zip
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+   # Or run the included Python ingestion tool:
+   python tools/fetch_movielens.py
+   ```
+2. Verify that `data/movielens/` contains `links.csv`, `movies.csv`, and `ratings.csv`.
+3. Verify `links.csv` mapping integrity:
+   ```bash
+   python tools/verify_movielens_mapping.py
+   ```
 
-***
+---
 
-# Editing this README
+## 🚀 Setup & Running Locally
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+### 1. Backend Setup
 
-## Suggestions for a good README
+```bash
+# From workspace root
+python -m venv .venv
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+# Activate venv:
+# Windows:
+.venv\Scripts\activate
+# Linux/macOS:
+source .venv/bin/activate
 
-## Name
-Choose a self-explaining name for your project.
+# Install dependencies:
+pip install -r requirements.txt
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+# Start FastAPI server:
+uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
+```
+Backend API interactive documentation is available at: `http://127.0.0.1:8000/docs`
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+### 2. Frontend Setup
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+```bash
+# From workspace root
+cd frontend
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+# Install Node dependencies:
+npm install
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+# Start development server:
+npm run dev
+```
+Open `http://localhost:3000` in your browser.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+---
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+## 🧪 Running Tests
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+### Backend Tests
+```bash
+# Run all unit and integration tests with pytest:
+pytest tests/ -v
+```
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+---
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+## 📡 API Endpoint Reference
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+| Method | Endpoint | Description | Rate Limit |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/health` | Healthcheck & service status | None |
+| `GET` | `/api/search?q={query}` | Search & autocomplete movies by title | 60/min |
+| `POST` | `/api/recommend` | Generate explainable hybrid recommendations | 30/min |
+| `GET` | `/api/movie/{id}` | Retrieve individual film details and score preview | 60/min |
 
-## License
-For open source projects, say how it is licensed.
+### Recommendation Request Example (`POST /api/recommend`):
+```json
+{
+  "query": "RRR",
+  "tmdb_id": 579974,
+  "top_k": 10
+}
+```
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+---
+
+## 📜 Compliance, Citations & Attributions
+
+### The Movie Database (TMDB)
+<img src="frontend/public/tmdb-logo.svg" alt="TMDB Logo" width="100" />
+
+*This product uses the TMDB API but is not endorsed or certified by TMDB.* All movie artwork, overview text, and credits are provided courtesy of TMDB.
+
+### MovieLens Citation
+The collaborative filtering engine incorporates MovieLens research datasets provided by GroupLens Research at the University of Minnesota. MovieLens is licensed strictly for non-commercial research use:
+> F. Maxwell Harper and Joseph A. Konstan. 2015. *The MovieLens Datasets: History and Context.* ACM Transactions on Interactive Intelligent Systems (TiiS) 5, 4: 19:1–19:19. https://doi.org/10.1145/2827872
+
+### License
+This repository is licensed under the [MIT License](LICENSE).
+
+---
+
+## 🚦 Project Status
+
+| Phase | Description | Status |
+| :--- | :--- | :---: |
+| **Phase 1** | Blueprint & Constitution (`gemini.md`) | ✅ Complete |
+| **Phase 2** | Link (TMDB, MovieLens Ingestion, VADER Setup) | ✅ Complete |
+| **Phase 3** | Architect (ML Engines, FastAPI Backend, Fusion) | ✅ Complete |
+| **Phase 4** | Stylize (Next.js 14 Obsidian Cinematic Frontend) | ✅ Complete |
+| **Phase 5** | Trigger (End-to-End Latency & Browser Verification) | ✅ Complete |
+| **Phase 6** | Hygiene, Security & Backend Hardening | 🔄 In Progress |
+| **Phase 7** | Recommendation Quality & Multilingual Evaluation | ⏳ Planned |
+| **Phase 8** | PostgreSQL Provisioning & Query Acceleration | ⏳ Planned |
+| **Phase 9** | Comprehensive Test Suite, Docker & GitLab CI | ⏳ Planned |

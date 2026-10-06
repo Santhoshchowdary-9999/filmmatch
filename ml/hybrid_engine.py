@@ -32,10 +32,10 @@ class MovieRecommendation:
     genres: list[str]
     vote_average: float
     vote_count: int
-    runtime: Optional[int] = None
     hybrid_score: float         # 0.0 to 100.0
     match_percentage: int       # 0 to 100%
     score_breakdown: ScoreBreakdown
+    runtime: Optional[int] = None
 
 
 @dataclass
@@ -243,10 +243,10 @@ class HybridRecommendationEngine:
                 genres=candidate.genres,
                 vote_average=candidate.vote_average,
                 vote_count=candidate.vote_count,
-                runtime=getattr(candidate, "runtime", None),
                 hybrid_score=hybrid_score_100,
                 match_percentage=match_percentage,
                 score_breakdown=breakdown,
+                runtime=getattr(candidate, "runtime", None),
             )
             ranked_items.append(rec)
 

@@ -23,46 +23,37 @@ export const MoviePoster: React.FC<MoviePosterProps> = ({
 
   const formattedUrl = getTmdbPosterUrl(src);
 
-  // Reset image load/error state if URL changes
   React.useEffect(() => {
     setHasError(false);
     setIsLoaded(false);
   }, [formattedUrl]);
 
-  // Graceful fallback — no poster or image failed to load
+  // ── Fallback (no poster or load error) ──
   if (!formattedUrl || hasError) {
     return (
-      <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#1a1a2e] via-[#16213e] to-[#0f3460] p-4 text-center select-none">
-        {/* Clean Icon Container */}
-        <div className="relative z-10 flex flex-col items-center gap-2.5">
-          <div className="p-3 rounded-2xl bg-indigo-500/15 border border-indigo-500/20 backdrop-blur-sm">
-            <Film className="w-7 h-7 text-indigo-400/70" />
-          </div>
-          {/* Title — always shown, never blank */}
-          <p className="text-[12px] font-bold text-gray-200 line-clamp-3 leading-snug max-w-[90%]">
-            {alt || "Unknown Title"}
-          </p>
-          <span className="text-[9px] font-semibold uppercase tracking-widest text-indigo-400/50 mt-0.5">
-            No Poster
-          </span>
+      <div className="w-full h-full flex flex-col items-center justify-center bg-surface-2 p-3 text-center select-none gap-2">
+        <div className="p-2.5 rounded-xl bg-surface-3 border border-white/[0.06]">
+          <Film className="w-5 h-5 text-[#3C3A38]" />
         </div>
+        <p className="text-[11px] font-medium text-[#5C5A58] line-clamp-2 leading-snug max-w-[90%]">
+          {alt || "Unknown Title"}
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="relative w-full h-full overflow-hidden bg-surface-3">
-      {/* Loading Skeleton */}
+    <div className="relative w-full h-full overflow-hidden">
+      {/* ── Quiet skeleton — no pulse flash ── */}
       {!isLoaded && (
-        <div className="absolute inset-0 bg-gradient-to-br from-surface-2 to-surface-3 animate-pulse flex items-center justify-center">
-          <Film className="w-5 h-5 text-gray-600/50" />
-        </div>
+        <div className="absolute inset-0 skeleton" aria-hidden="true" />
       )}
 
       <img
         src={formattedUrl}
         alt={alt}
         loading={priority ? "eager" : "lazy"}
+        decoding="async"
         onLoad={() => setIsLoaded(true)}
         onError={() => setHasError(true)}
         className={`${className} transition-opacity duration-300 ${

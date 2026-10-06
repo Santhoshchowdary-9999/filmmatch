@@ -19,36 +19,37 @@ export const SectionHeader: React.FC<SectionHeaderProps> = ({
   badgeText,
   action,
   children,
-}) => {
-  return (
-    <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6 pb-2 border-b border-white/[0.06]">
-      <div>
-        <div className="flex items-center space-x-2.5">
-          {Icon && (
-            <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-              <Icon className="w-5 h-5" />
-            </div>
-          )}
-          <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white font-sans">
-            {title}
-          </h2>
-          {badgeText && (
-            <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-              {badgeText}
-            </span>
-          )}
-        </div>
-        {subtitle && (
-          <p className="text-sm text-gray-400 mt-1.5 font-normal">
-            {subtitle}
-          </p>
+}) => (
+  <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 mb-5">
+    <div className="flex-1 min-w-0">
+      <div className="flex items-center gap-2.5 flex-wrap">
+        {Icon && (
+          <div className="p-1.5 rounded-lg bg-surface-2 border border-white/[0.07]">
+            <Icon className="w-4 h-4 text-[#A8A5A0]" />
+          </div>
+        )}
+        <h2
+          className="font-display text-2xl sm:text-3xl font-black text-warm-white tracking-tight"
+          style={{ fontFamily: "Outfit, Inter, sans-serif" }}
+        >
+          {title}
+        </h2>
+        {badgeText && (
+          <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-surface-2 text-[#5C5A58] border border-white/[0.06]">
+            {badgeText}
+          </span>
         )}
       </div>
-      {(action || children) && (
-        <div className="flex items-center gap-3 self-start sm:self-auto">
-          {action || children}
-        </div>
+      {subtitle && (
+        <p className="text-xs text-[#5C5A58] mt-1.5 font-normal max-w-xl">
+          {subtitle}
+        </p>
       )}
     </div>
-  );
-};
+    {(action || children) && (
+      <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+        {action || children}
+      </div>
+    )}
+  </div>
+);

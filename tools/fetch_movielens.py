@@ -7,7 +7,7 @@ import sys
 import zipfile
 import io
 from pathlib import Path
-import requests
+import httpx
 
 MOVIELENS_URL = "https://files.grouplens.org/datasets/movielens/ml-latest-small.zip"
 TARGET_DIR = Path(__file__).resolve().parent.parent / "data" / "movielens"
@@ -27,18 +27,18 @@ def download_and_extract():
             print(f"    - {f}: {size_kb:.1f} KB")
         return True
 
-    print(f"[*] Downloading MovieLens dataset from {MOVIELENS_URL} using requests...")
+    print(f"[*] Downloading MovieLens dataset from {MOVIELENS_URL} using httpx...")
     try:
         # First try normal SSL verification
         try:
-            response = requests.get(MOVIELENS_URL, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-            response.raise_for_status()
-        except requests.exceptions.SSLError:
-            print("[!] SSL verification failed, retrying with verify=False for GroupLens CDN...")
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-            response = requests.get(MOVIELENS_URL, timeout=30, verify=False, headers={"User-Agent": "Mozilla/5.0"})
-            response.raise_for_status()
+            with httpx.Client(timeout=30.0, headers={"User-Agent": "Mozilla/5.0"}) as client:
+                response = client.get(MOVIELENS_URL)
+                response.raise_for_status()
+        except httpx.ConnectError:
+            print("[!] SSL/Connection verification issue, retrying with verify=False for GroupLens CDN...")
+            with httpx.Client(timeout=30.0, verify=False, headers={"User-Agent": "Mozilla/5.0"}) as client:
+                response = client.get(MOVIELENS_URL)
+                response.raise_for_status()
 
         print(f"[+] Download complete ({len(response.content) / 1024:.1f} KB). Extracting files...")
         

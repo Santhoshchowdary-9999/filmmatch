@@ -7,7 +7,7 @@ import os
 import sys
 import time
 from pathlib import Path
-import requests
+import httpx
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
@@ -61,7 +61,7 @@ def verify_tmdb():
     t0 = time.perf_counter()
     try:
         url = "https://api.themoviedb.org/3/configuration"
-        res = requests.get(url, headers=headers, params=base_params, timeout=10)
+        res = httpx.get(url, headers=headers, params=base_params, timeout=10.0)
         latency_ms = (time.perf_counter() - t0) * 1000
         
         if res.status_code == 200:
@@ -94,7 +94,7 @@ def verify_tmdb():
         params = {**base_params, "query": q["title"], "include_adult": "false"}
         t0 = time.perf_counter()
         try:
-            res = requests.get(search_url, headers=headers, params=params, timeout=10)
+            res = httpx.get(search_url, headers=headers, params=params, timeout=10.0)
             latency_ms = (time.perf_counter() - t0) * 1000
             
             if res.status_code == 200:
@@ -119,7 +119,7 @@ def verify_tmdb():
         movie_id = sample_movie.get("id")
         reviews_url = f"https://api.themoviedb.org/3/movie/{movie_id}/reviews"
         try:
-            res = requests.get(reviews_url, headers=headers, params=base_params, timeout=10)
+            res = httpx.get(reviews_url, headers=headers, params=base_params, timeout=10.0)
             if res.status_code == 200:
                 rev_data = res.json()
                 total_revs = rev_data.get("total_results", 0)
