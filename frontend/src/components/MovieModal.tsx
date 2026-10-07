@@ -1,11 +1,16 @@
 "use client";
 
 import React, { useEffect, useRef, useCallback } from "react";
+import Link from "next/link";
 import {
-  X, Star, ExternalLink, ArrowRight,
+  X, Star, ExternalLink, ArrowRight, Sparkles,
 } from "lucide-react";
 import { CatalogMovie, MovieRecommendation, WatchProvidersData } from "@/types";
 import { MoviePoster } from "./MoviePoster";
+import { RecommendationExplanation } from "./RecommendationExplanation";
+import { FeedbackControls } from "./FeedbackControls";
+import { WatchlistButton } from "./WatchlistButton";
+import { useWatchlist } from "@/utils/useWatchlist";
 
 interface MovieModalProps {
   movie: CatalogMovie | MovieRecommendation | null;
@@ -22,6 +27,7 @@ export const MovieModal: React.FC<MovieModalProps> = ({
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const { isInWatchlist, addToWatchlist, removeFromWatchlist } = useWatchlist();
 
   // ── Escape to close ──
   useEffect(() => {
@@ -179,6 +185,11 @@ export const MovieModal: React.FC<MovieModalProps> = ({
                 {rating.toFixed(1)}
               </span>
             )}
+            {recData?.is_personalized && (
+              <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
+                🎯 Personalized for you
+              </span>
+            )}
             {recData && (
               <span className="badge-match ml-auto">
                 {recData.match_percentage}% Match
@@ -186,14 +197,23 @@ export const MovieModal: React.FC<MovieModalProps> = ({
             )}
           </div>
 
-          {/* Title */}
-          <h2
-            id="modal-title"
-            className="font-display text-2xl sm:text-3xl font-black text-warm-white tracking-tight leading-tight mb-3"
-            style={{ fontFamily: "Outfit, Inter, sans-serif" }}
-          >
-            {title}
-          </h2>
+          {/* Title + Watchlist */}
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <h2
+              id="modal-title"
+              className="font-display text-2xl sm:text-3xl font-black text-warm-white tracking-tight leading-tight flex-1"
+              style={{ fontFamily: "Outfit, Inter, sans-serif" }}
+            >
+              {title}
+            </h2>
+            <div className="flex-shrink-0 mt-1">
+              <WatchlistButton
+                isInWatchlist={isInWatchlist(tmdbId)}
+                onToggle={() => isInWatchlist(tmdbId) ? removeFromWatchlist(tmdbId) : addToWatchlist(movie)}
+                size="md"
+              />
+            </div>
+          </div>
 
           {/* Genres */}
           {genres.length > 0 && (
@@ -247,9 +267,16 @@ export const MovieModal: React.FC<MovieModalProps> = ({
                 ))}
               </div>
 
-              <p className="text-xs text-[#5C5A58] leading-relaxed">
+              <p className="text-xs text-[#5C5A58] leading-relaxed mb-3">
                 {recData.score_breakdown.explanation}
               </p>
+
+              {/* Explainable AI section */}
+              <RecommendationExplanation
+                explanationDetails={recData.explanation_details}
+                scoreBreakdown={recData.score_breakdown}
+                sourceTitle={title}
+              />
             </div>
           )}
           {/* ── Watch Providers (IN Region) ── */}
@@ -319,9 +346,21 @@ export const MovieModal: React.FC<MovieModalProps> = ({
 
           <div className="mb-6">
             <h3 className="text-[11px] font-bold uppercase tracking-wider text-[#5C5A58] mb-2">Synopsis</h3>
-            <p className="text-sm text-[#A8A5A0] leading-relaxed">
+            <p className="text-sm text-[#A8A5A0] leading-relaxed mb-4">
               {overview || "No synopsis available."}
             </p>
+
+            {/* User Feedback & Rating */}
+            <div className="p-3.5 rounded-xl bg-surface-2 border border-white/[0.06]">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-[#7A7875] block mb-2">
+                Rate & Help FilmMatch Learn Your Taste
+              </span>
+              <FeedbackControls
+                tmdbId={tmdbId}
+                hybridScore={recData?.hybrid_score}
+                isColdStart={recData?.score_breakdown?.is_cold_start}
+              />
+            </div>
           </div>
 
           {/* ── Actions ── */}
@@ -337,6 +376,13 @@ export const MovieModal: React.FC<MovieModalProps> = ({
             </a>
 
             <div className="flex items-center gap-2.5">
+              <Link
+                href={`/movie/${tmdbId}`}
+                className="btn-ghost px-3.5 py-2.5 rounded-xl text-sm min-h-[44px] flex items-center gap-1.5"
+                onClick={handleClose}
+              >
+                Full Page
+              </Link>
               <button
                 onClick={handleClose}
                 className="btn-ghost px-4 py-2.5 rounded-xl text-sm min-h-[44px]"

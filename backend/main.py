@@ -10,29 +10,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-# Resilient TMDB CloudFront routing (bypasses ISP DNS poisoning/sinkholing)
-try:
-    from httpcore._backends.anyio import AnyIOBackend
-    _orig_connect_tcp = AnyIOBackend.connect_tcp
 
-    async def _tmdb_connect_tcp(self, host, port, *args, **kwargs):
-        if host in ("api.themoviedb.org", "themoviedb.org"):
-            host = "143.204.55.46"
-        return await _orig_connect_tcp(self, host, port, *args, **kwargs)
-
-    AnyIOBackend.connect_tcp = _tmdb_connect_tcp
-except Exception:
-    pass
-
-import socket
-_orig_getaddrinfo = socket.getaddrinfo
-
-def _tmdb_getaddrinfo(host, port, *args, **kwargs):
-    if host in ("api.themoviedb.org", "themoviedb.org"):
-        return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('143.204.55.46', port))]
-    return _orig_getaddrinfo(host, port, *args, **kwargs)
-
-socket.getaddrinfo = _tmdb_getaddrinfo
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
@@ -88,10 +66,27 @@ async def lifespan(app: FastAPI):
     else:
         print("[-] TMDB credentials not configured — skipping cache pre-warm.")
 
+    # ── PostgreSQL database pre-warm & table verification ──────────────────
+    try:
+        from backend.db import init_db, close_db_pool
+        print("[*] Initializing PostgreSQL connection pool and tables...")
+        db_ready = await init_db()
+        if db_ready:
+            print("[+] PostgreSQL ready: feedback, watchlist, user_history tables active.")
+        else:
+            print("[-] PostgreSQL offline or credentials missing (resilient mode active).")
+    except Exception as exc:
+        print(f"[-] PostgreSQL initialization warning: {exc}")
+
     yield
 
     # ── Graceful shutdown ────────────────────────────────────────────────────
     await tmdb_service.close()
+    try:
+        from backend.db import close_db_pool
+        await close_db_pool()
+    except Exception:
+        pass
     print("[*] Shutting down FilmMatch AI Backend...")
 
 

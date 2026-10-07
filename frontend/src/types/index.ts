@@ -28,12 +28,18 @@ export interface WatchProvidersData {
   link?: string;
 }
 
+export interface ExplanationDetails {
+  title: string;
+  reasons: string[];
+}
+
 export interface ScoreBreakdown {
   content_similarity: number;
   sentiment_score: number;
   collaborative_score: number | null;
   is_cold_start: boolean;
   explanation: string;
+  explanation_details?: ExplanationDetails;
 }
 
 export interface MovieRecommendation {
@@ -51,6 +57,8 @@ export interface MovieRecommendation {
   hybrid_score: number;
   match_percentage: number;
   score_breakdown: ScoreBreakdown;
+  explanation_details?: ExplanationDetails;
+  is_personalized?: boolean;
   watch_providers?: WatchProvidersData | null;
 }
 
@@ -125,4 +133,80 @@ export interface CatalogMovie {
   overview: string;
   sentiment: string;
   isTrending?: boolean;
+}
+
+export interface FeedbackItem {
+  session_id: string;
+  source_tmdb_id?: number | null;
+  recommended_tmdb_id: number;
+  vote: string;
+  rating?: number | null;
+  hybrid_score?: number | null;
+  is_cold_start?: boolean;
+  created_at?: string;
+}
+
+export interface WatchlistItem {
+  id?: number;
+  session_id: string;
+  tmdb_id: number;
+  title: string;
+  poster_url: string;
+  release_date: string;
+  vote_average: number;
+  genres: string;
+  original_language: string;
+  created_at?: string;
+}
+
+export interface DetectedFilters {
+  language?: string | null;
+  mood?: string | null;
+  genres: string[];
+  runtime_max?: number | null;
+  year_min?: number | null;
+  keywords: string[];
+}
+
+export interface NaturalSearchResponse {
+  original_query: string;
+  detected_filters: DetectedFilters;
+  results: MovieRecommendation[];
+  total_results: number;
+}
+
+export interface MovieComparisonItem {
+  tmdb_id: number;
+  title: string;
+  poster_url: string;
+  backdrop_url?: string;
+  release_date: string;
+  year: string;
+  genres: string[];
+  runtime?: number | null;
+  vote_average: number;
+  vote_count: number;
+  sentiment_score: number;
+  sentiment_label: string;
+  strengths: string[];
+  weaknesses: string[];
+  watch_providers?: WatchProvidersData | null;
+}
+
+export interface CompareResponse {
+  movies: MovieComparisonItem[];
+  winner_ratings?: string | null;
+  winner_sentiment?: string | null;
+}
+
+export interface UserAnalytics {
+  session_id: string;
+  total_feedback: number;
+  liked_count: number;
+  disliked_count: number;
+  average_rating: number | null;
+  watchlist_count: number;
+  favorite_genres: { genre: string; count: number }[];
+  favorite_languages: { language: string; count: number }[];
+  personalized_ready: boolean;
 }

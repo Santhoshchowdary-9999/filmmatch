@@ -1,8 +1,10 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import {
   Flame, Compass, Loader2, AlertCircle, RefreshCw, ChevronDown,
+  Sparkles, Gem, Clock, Bookmark, ArrowRight, ArrowLeftRight,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { Hero } from "@/components/Hero";
@@ -12,13 +14,21 @@ import { LanguageFilter } from "@/components/LanguageFilter";
 import { HowItWorks } from "@/components/HowItWorks";
 import { RecommendationSection } from "@/components/RecommendationSection";
 import { MovieModal } from "@/components/MovieModal";
+import { MoodSelector } from "@/components/MoodSelector";
+import { NaturalSearchBar } from "@/components/NaturalSearchBar";
+import { CompareModal } from "@/components/CompareModal";
+import { MoviePoster } from "@/components/MoviePoster";
 import { Footer } from "@/components/Footer";
+import { useWatchlist } from "@/utils/useWatchlist";
 
 import {
   CatalogMovie, MovieRecommendation, MovieSearchItem,
   MovieSearchResponse, RecommendationResponse, RecommendationFilters,
 } from "@/types";
-import { fetchFromApi, describeProvenance, requestError } from "@/utils/api";
+import {
+  fetchFromApi, describeProvenance, requestError,
+  getSessionId, naturalSearchApi, getMoodRecommendationsApi,
+} from "@/utils/api";
 import { getTmdbPosterUrl, getTmdbBackdropUrl } from "@/utils/image";
 
 const INITIAL_DISPLAY_COUNT = 12;
@@ -78,11 +88,126 @@ export default function HomePage() {
   const [exploreStatus, setExploreStatus] = useState("");
   const recRequestId = useRef(0);
 
+  // User Features & State
+  const { watchlist } = useWatchlist();
+  const [activeMood, setActiveMood] = useState<string>("");
+  const [isIndianCinemaMode, setIsIndianCinemaMode] = useState<boolean>(false);
+  const [recentlyViewed, setRecentlyViewed] = useState<CatalogMovie[]>([]);
+  const [compareMovieA, setCompareMovieA] = useState<CatalogMovie | MovieRecommendation | null>(null);
+  const [compareMovieB, setCompareMovieB] = useState<CatalogMovie | MovieRecommendation | null>(null);
+  const [isCompareModalOpen, setIsCompareModalOpen] = useState<boolean>(false);
+
   const [modalMovie, setModalMovie] = useState<CatalogMovie | MovieRecommendation | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const recSectionRef = useRef<HTMLDivElement>(null);
   const trendingSectionRef = useRef<HTMLDivElement>(null);
+
+  // Recently Viewed persistence
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("filmmatch_recent");
+      if (saved) setRecentlyViewed(JSON.parse(saved));
+    } catch (e) {}
+  }, []);
+
+  const recordRecentlyViewed = (movie: CatalogMovie | MovieRecommendation) => {
+    try {
+      const item: CatalogMovie = {
+        id: movie.tmdb_id,
+        tmdb_id: movie.tmdb_id,
+        title: movie.title,
+        year: "release_date" in movie && movie.release_date ? movie.release_date.slice(0, 4) : ((movie as CatalogMovie).year || ""),
+        rating: "vote_average" in movie ? (movie as MovieRecommendation).vote_average : (movie as CatalogMovie).rating,
+        genres: movie.genres || [],
+        language: "original_language" in movie ? (movie as MovieRecommendation).original_language : ((movie as CatalogMovie).language || "EN"),
+        languageCode: "original_language" in movie ? (movie as MovieRecommendation).original_language : ((movie as CatalogMovie).languageCode || "en"),
+        director: "",
+        cast: [],
+        poster: "poster_url" in movie ? (movie as MovieRecommendation).poster_url : ((movie as CatalogMovie).poster || ""),
+        backdrop: "backdrop_url" in movie ? (movie as MovieRecommendation).backdrop_url : ((movie as CatalogMovie).backdrop || ""),
+        overview: movie.overview,
+        sentiment: "Audience Acclaimed",
+      };
+      setRecentlyViewed(prev => {
+        const filtered = prev.filter(p => p.tmdb_id !== item.tmdb_id);
+        const updated = [item, ...filtered].slice(0, 6);
+        localStorage.setItem("filmmatch_recent", JSON.stringify(updated));
+        return updated;
+      });
+    } catch (e) {}
+  };
+
+  const handleOpenMovie = (m: CatalogMovie | MovieRecommendation) => {
+    recordRecentlyViewed(m);
+    setModalMovie(m);
+  };
+
+  // Feature 6: Mood recommendation handler
+  const handleMoodSelect = async (mood: string) => {
+    setActiveMood(mood);
+    setIsLoading(true);
+    setError(null);
+    setTimeout(() => recSectionRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+    try {
+      const res = await getMoodRecommendationsApi(
+        mood,
+        selectedLanguage !== "all" ? selectedLanguage : undefined
+      );
+      setRecommendationData(res);
+    } catch (err) {
+      setError(requestError(err));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Feature 7: Natural language search handler
+  const handleNaturalSearch = async (query: string) => {
+    setIsLoading(true);
+    setError(null);
+    setTimeout(() => recSectionRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+    try {
+      const res = await naturalSearchApi(query);
+      setRecommendationData({
+        provenance: res.provenance || { source: "tmdb", cached: false, fetched_at: new Date().toISOString() },
+        source_movie: {
+          tmdb_id: 0,
+          title: `Natural Search: "${query}"`,
+          release_date: "",
+          original_language: "",
+          poster_url: "",
+          genres: [],
+          overview: `Search criteria: ${query}`,
+        },
+        recommendations: res.recommendations || [],
+        applied_weights: { content: 0.5, sentiment: 0.2, collaborative: 0.3 },
+        execution_time_ms: 0,
+      });
+    } catch (err) {
+      setError(requestError(err));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Feature 11: Hidden Gems quick trigger
+  const handleLoadHiddenGems = () => {
+    setRecFilters({ hidden_gems: true });
+    handleGetRecommendations(579974, "Hidden Gems", { hidden_gems: true });
+  };
+
+  // Handle URL params (?recommend=ID&title=...)
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const recId = params.get("recommend");
+      const recTitle = params.get("title");
+      if (recId) {
+        handleGetRecommendations(Number(recId), recTitle || "Recommended Film");
+      }
+    }
+  }, []);
   const exploreSectionRef = useRef<HTMLDivElement>(null);
 
   // ── Load trending ──
@@ -280,6 +405,84 @@ export default function HomePage() {
 
       <main className="flex-1">
 
+        {/* ── Feature 7: Natural Language Movie Search ── */}
+        <section className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 -mt-6 sm:-mt-8 mb-6 relative z-20">
+          <NaturalSearchBar onSearch={handleNaturalSearch} isLoading={isLoading} />
+        </section>
+
+        {/* ── Feature 6: Choose Your Mood Section ── */}
+        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+          <MoodSelector selectedMood={activeMood} onSelectMood={handleMoodSelect} />
+        </section>
+
+        {/* ── Features 11 & 12: Quick Discovery Modes ── */}
+        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-surface-1 border border-white/[0.06]">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => {
+                  const nextState = !isIndianCinemaMode;
+                  setIsIndianCinemaMode(nextState);
+                  if (nextState) {
+                    setSelectedLanguage("te");
+                  } else {
+                    setSelectedLanguage("all");
+                  }
+                }}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all ${
+                  isIndianCinemaMode
+                    ? "bg-amber-500/20 text-[var(--amber)] border border-amber-500/40 shadow-sm"
+                    : "btn-ghost"
+                }`}
+                aria-pressed={isIndianCinemaMode}
+              >
+                <span>🇮🇳 Indian Cinema Mode</span>
+                {isIndianCinemaMode && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--amber)] text-black font-extrabold">Active</span>
+                )}
+              </button>
+
+              <button
+                onClick={handleLoadHiddenGems}
+                className="btn-ghost flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold hover:border-purple-500/40 hover:text-purple-300 transition-all"
+                aria-label="Discover Hidden Gems"
+              >
+                <span>💎 Hidden Gems Mode</span>
+              </button>
+            </div>
+
+            {isIndianCinemaMode && (
+              <div className="flex flex-wrap items-center gap-1.5 text-xs animate-fade-in">
+                <span className="text-[11px] text-[#5C5A58] font-semibold mr-1">Region:</span>
+                {[
+                  { code: "te", label: "Telugu" },
+                  { code: "hi", label: "Hindi" },
+                  { code: "ta", label: "Tamil" },
+                  { code: "ml", label: "Malayalam" },
+                  { code: "kn", label: "Kannada" },
+                  { code: "bn", label: "Bengali" },
+                  { code: "mr", label: "Marathi" },
+                ].map(({ code, label }) => (
+                  <button
+                    key={code}
+                    onClick={() => {
+                      setSelectedLanguage(code);
+                      exploreSectionRef.current?.scrollIntoView({ behavior: "smooth" });
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${
+                      selectedLanguage === code
+                        ? "bg-[var(--amber)] text-black font-bold"
+                        : "bg-surface-2 text-[#A8A5A0] hover:text-white"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+
         {/* ── Recommendation anchor ── */}
         <div ref={recSectionRef} className="scroll-mt-20">
 
@@ -337,7 +540,7 @@ export default function HomePage() {
             <RecommendationSection
               data={recommendationData}
               onReset={() => { setRecommendationData(null); setRecFilters({}); }}
-              onSelectMovie={rec => setModalMovie(rec)}
+              onSelectMovie={rec => handleOpenMovie(rec)}
               onFindMatchesForRec={rec => {
                 setRecFilters({});
                 handleGetRecommendations(rec.tmdb_id, rec.title, {});
@@ -396,7 +599,7 @@ export default function HomePage() {
               <MovieGrid
                 movies={visibleTrendingMovies}
                 loadingMovieId={loadingMovieId}
-                onSelectMovie={movie => setModalMovie(movie)}
+                onSelectMovie={movie => handleOpenMovie(movie)}
                 onFindMatches={movie => handleGetRecommendations(movie.tmdb_id, movie.title)}
               />
               {hasMoreTrending && (
@@ -455,7 +658,7 @@ export default function HomePage() {
               <MovieGrid
                 movies={visibleExploreMovies}
                 loadingMovieId={loadingMovieId}
-                onSelectMovie={movie => setModalMovie(movie)}
+                onSelectMovie={movie => handleOpenMovie(movie)}
                 onFindMatches={movie => handleGetRecommendations(movie.tmdb_id, movie.title)}
               />
               {hasMoreExplore && (
@@ -482,6 +685,96 @@ export default function HomePage() {
           )}
         </section>
 
+        {/* ── Feature 16: Recently Viewed ── */}
+        {recentlyViewed.length > 0 && (
+          <section className="py-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 border-t border-white/[0.05]">
+            <SectionHeader
+              title="Recently Viewed"
+              subtitle="Films you recently explored"
+              icon={Clock}
+            />
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3 mt-4">
+              {recentlyViewed.map((m) => (
+                <div
+                  key={m.tmdb_id}
+                  onClick={() => handleOpenMovie(m)}
+                  className="group cursor-pointer rounded-xl overflow-hidden bg-surface-2 border border-white/[0.06] hover:border-white/[0.14] transition-all flex flex-col"
+                >
+                  <div className="poster-box">
+                    <MoviePoster src={m.poster} alt={m.title} />
+                  </div>
+                  <div className="p-2.5 flex-1 flex flex-col justify-between">
+                    <p className="text-xs font-bold text-[#F0EDE8] truncate group-hover:text-[var(--amber)] transition-colors">
+                      {m.title}
+                    </p>
+                    <div className="flex items-center justify-between mt-1 text-[10px] text-[#5C5A58]">
+                      <span>{m.year}</span>
+                      <span className="text-[var(--gold)]">★ {m.rating ? m.rating.toFixed(1) : ""}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* ── Feature 16: Watchlist Preview ── */}
+        {watchlist.length > 0 && (
+          <section className="py-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 border-t border-white/[0.05]">
+            <div className="flex items-center justify-between mb-4">
+              <SectionHeader
+                title="Your Watchlist"
+                subtitle={`${watchlist.length} saved films awaiting your view`}
+                icon={Bookmark}
+              />
+              <Link
+                href="/profile"
+                className="text-xs text-[var(--amber)] hover:underline flex items-center gap-1 font-semibold"
+              >
+                <span>View Full Watchlist</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+              {watchlist.slice(0, 6).map((m) => (
+                <div
+                  key={m.tmdb_id}
+                  onClick={() => handleOpenMovie({
+                    id: m.tmdb_id,
+                    tmdb_id: m.tmdb_id,
+                    title: m.title,
+                    year: m.year || "",
+                    rating: m.rating || 0,
+                    genres: m.genres || [],
+                    language: "EN",
+                    languageCode: "en",
+                    director: "",
+                    cast: [],
+                    poster: m.poster || "",
+                    backdrop: m.poster || "",
+                    overview: m.overview || "",
+                    sentiment: "Audience Rated",
+                  })}
+                  className="group cursor-pointer rounded-xl overflow-hidden bg-surface-2 border border-white/[0.06] hover:border-white/[0.14] transition-all flex flex-col"
+                >
+                  <div className="poster-box">
+                    <MoviePoster src={m.poster} alt={m.title} />
+                  </div>
+                  <div className="p-2.5 flex-1 flex flex-col justify-between">
+                    <p className="text-xs font-bold text-[#F0EDE8] truncate group-hover:text-[var(--amber)] transition-colors">
+                      {m.title}
+                    </p>
+                    <div className="flex items-center justify-between mt-1 text-[10px] text-[#5C5A58]">
+                      <span>{m.year}</span>
+                      <span className="text-[var(--gold)]">★ {m.rating ? m.rating.toFixed(1) : ""}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* How It Works */}
         <HowItWorks />
       </main>
@@ -492,6 +785,16 @@ export default function HomePage() {
         onClose={() => setModalMovie(null)}
         onFindMatches={(id, title) => handleGetRecommendations(id, title)}
       />
+
+      {/* Compare Modal */}
+      {isCompareModalOpen && compareMovieA && compareMovieB && (
+        <CompareModal
+          movieA={compareMovieA}
+          movieB={compareMovieB}
+          onClose={() => setIsCompareModalOpen(false)}
+          onFindMatches={(id, title) => handleGetRecommendations(id, title)}
+        />
+      )}
 
       <Footer />
     </div>

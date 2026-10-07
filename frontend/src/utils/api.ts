@@ -63,3 +63,121 @@ export function describeProvenance(p: Provenance): string {
 export function requestError(error: unknown): string {
   return error instanceof Error ? error.message : "The request failed.";
 }
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+export function getSessionId(): string {
+  if (typeof window === "undefined") return "server-session";
+  const KEY = "filmmatch_session_id";
+  let sid = localStorage.getItem(KEY);
+  if (!sid) {
+    sid = "fm_" + Math.random().toString(36).substring(2, 11) + "_" + Date.now().toString(36);
+    localStorage.setItem(KEY, sid);
+  }
+  return sid;
+}
+
+export async function apiJsonRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const msg = typeof data?.detail === "string" ? data.detail : data?.detail?.message || `HTTP ${response.status}`;
+    throw new Error(msg);
+  }
+  return data as T;
+}
+
+// ── Feature 3: Feedback API ────────────────────────────────────────────────
+export async function sendFeedback(payload: {
+  recommended_tmdb_id: number;
+  vote: "like" | "dislike" | "up" | "down";
+  source_tmdb_id?: number | null;
+  rating?: number | null;
+  hybrid_score?: number | null;
+  is_cold_start?: boolean;
+}) {
+  const session_id = getSessionId();
+  return apiJsonRequest<{ status: string; message: string }>("/api/feedback", {
+    method: "POST",
+    body: JSON.stringify({ session_id, ...payload }),
+  });
+}
+
+export async function getFeedbackHistory() {
+  const session_id = getSessionId();
+  return apiJsonRequest<{ session_id: string; feedback: any[]; total: number }>(`/api/feedback?session_id=${session_id}`);
+}
+
+// ── Feature 4: Watchlist API ───────────────────────────────────────────────
+export async function addToWatchlistApi(movie: {
+  tmdb_id: number;
+  title: string;
+  poster_url?: string;
+  release_date?: string;
+  vote_average?: number;
+  genres?: string;
+  original_language?: string;
+}) {
+  const session_id = getSessionId();
+  return apiJsonRequest<{ status: string; message: string }>("/api/watchlist", {
+    method: "POST",
+    body: JSON.stringify({ session_id, ...movie }),
+  });
+}
+
+export async function removeFromWatchlistApi(tmdb_id: number) {
+  const session_id = getSessionId();
+  return apiJsonRequest<{ status: string; message: string }>(`/api/watchlist/${tmdb_id}?session_id=${session_id}`, {
+    method: "DELETE",
+  });
+}
+
+export async function getWatchlistApi() {
+  const session_id = getSessionId();
+  return apiJsonRequest<{ session_id: string; watchlist: any[]; total: number }>(`/api/watchlist?session_id=${session_id}`);
+}
+
+// ── Feature 6: Mood Recommendations API ────────────────────────────────────
+export async function getMoodRecommendationsApi(mood: string, language?: string) {
+  const session_id = getSessionId();
+  return apiJsonRequest<any>("/api/mood-recommend", {
+    method: "POST",
+    body: JSON.stringify({ mood, session_id, top_k: 10, language }),
+  });
+}
+
+// ── Feature 7: Natural Language Search API ─────────────────────────────────
+export async function naturalSearchApi(query: string) {
+  const session_id = getSessionId();
+  return apiJsonRequest<any>("/api/natural-search", {
+    method: "POST",
+    body: JSON.stringify({ query, session_id, top_k: 10 }),
+  });
+}
+
+// ── Feature 8: Compare Movies API ──────────────────────────────────────────
+export async function compareMoviesApi(movie_ids: number[]) {
+  return apiJsonRequest<any>("/api/compare", {
+    method: "POST",
+    body: JSON.stringify({ movie_ids }),
+  });
+}
+
+// ── Feature 14 & 15: Analytics & Profile API ───────────────────────────────
+export async function getAnalyticsApi(sessionId?: string) {
+  const session_id = sessionId || getSessionId();
+  return apiJsonRequest<any>(`/api/analytics?session_id=${session_id}`);
+}
+
+export async function getProfileApi(sessionId?: string) {
+  const session_id = sessionId || getSessionId();
+  return apiJsonRequest<any>(`/api/profile?session_id=${session_id}`);
+}
+

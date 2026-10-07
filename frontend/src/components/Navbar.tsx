@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Film, Flame, Compass, Sparkles, Menu, X, Search } from "lucide-react";
+import Link from "next/link";
+import { Film, Flame, Compass, Sparkles, Menu, X, Search, User } from "lucide-react";
 
 interface NavbarProps {
   onSearchFocus: () => void;
@@ -100,10 +101,27 @@ export const Navbar: React.FC<NavbarProps> = ({
                 /
               </kbd>
             </button>
+
+            {/* Profile & Watchlist */}
+            <Link
+              href="/profile"
+              className="ml-2 flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-2 border border-white/[0.08] hover:border-[var(--amber)]/40 text-xs font-semibold text-[#F0EDE8] hover:text-[var(--amber)] transition-all"
+              aria-label="Profile and Watchlist"
+            >
+              <User className="w-3.5 h-3.5 text-[var(--amber)]" />
+              <span>Profile</span>
+            </Link>
           </div>
 
           {/* ── Mobile controls ── */}
           <div className="flex md:hidden items-center gap-2">
+            <Link
+              href="/profile"
+              className="p-2 rounded-lg border border-white/[0.08] text-[var(--amber)] hover:text-white"
+              aria-label="Profile"
+            >
+              <User className="w-4 h-4" />
+            </Link>
             <button
               onClick={onSearchFocus}
               className="p-2 rounded-lg border border-white/[0.08] text-[#A8A5A0] hover:text-[#F0EDE8]"
@@ -143,6 +161,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                 {label}
               </button>
             ))}
+            <Link
+              href="/profile"
+              onClick={() => setMobileMenuOpen(false)}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-[var(--amber)] hover:bg-white/[0.05] transition-all duration-150"
+            >
+              <User className="w-4 h-4" />
+              <span>Profile & Watchlist</span>
+            </Link>
           </div>
         )}
       </div>

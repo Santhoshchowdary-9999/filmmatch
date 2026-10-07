@@ -728,21 +728,13 @@ class TMDBService:
         if self.read_token:
             self.headers["Authorization"] = f"Bearer {self.read_token}"
 
-        # Persistent async HTTP client — reused across all requests to avoid
-        # per-call TLS handshake and connection-pool overhead.
-        # Default timeout: 5 s connect + 15 s read (trending overrides to 20 s read).
-        self._client = httpx.AsyncClient(
-            headers=self.headers,
-            timeout=httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0),
-        )
-
         # Simple In-Memory TTL Cache: key -> (timestamp, ttl, data)
         self._cache: dict[str, tuple[float, float, Any]] = {}
         self._cache_ttl_seconds = 300.0  # 5 minutes default
 
     async def close(self) -> None:
-        """Close the persistent HTTP client. Call on application shutdown."""
-        await self._client.aclose()
+        """Close resources. Call on application shutdown."""
+        pass
 
     async def _request(self, endpoint: str, params: Optional[dict] = None,
                        force_refresh: bool = False, ttl: float = 300.0,
@@ -773,11 +765,11 @@ class TMDBService:
                         if endpoint == "/trending/movie/day"
                         else httpx.Timeout(connect=5.0, read=15.0, write=5.0, pool=5.0)
                     )
-                    response = await self._client.get(
-                        f"{self.base_url}{endpoint}",
-                        params=self._get_params(params),
-                        timeout=per_request_timeout,
-                    )
+                    async with httpx.AsyncClient(headers=self.headers, timeout=per_request_timeout) as client:
+                        response = await client.get(
+                            f"{self.base_url}{endpoint}",
+                            params=self._get_params(params),
+                        )
                     if response.status_code == 429 or response.status_code >= 500:
                         raise TMDBFailure(
                             "tmdb_transient_error",

@@ -35,6 +35,7 @@ class RecommendationRequest(BaseModel):
     min_rating: Optional[float] = Field(None, ge=0.0, le=10.0, description="Minimum TMDB vote_average (0-10)")
     language: Optional[list[str]] = Field(None, description="List of ISO 639-1 language codes, e.g. ['te', 'hi']")
     hidden_gems: Optional[bool] = Field(False, description="Filter for hidden gems: sentiment_score >= threshold and vote_count < threshold")
+    session_id: Optional[str] = Field(None, description="Optional anonymous session ID for personalized ranking")
 
     @field_validator("query")
     @classmethod
@@ -72,12 +73,18 @@ class WatchProvidersData(BaseModel):
 
 
 
+class ExplanationDetails(BaseModel):
+    title: str = "Why this movie?"
+    reasons: list[str] = Field(default_factory=list)
+
+
 class ScoreBreakdownSchema(BaseModel):
     content_similarity: float = Field(..., description="Cosine similarity score (0.0 to 1.0)")
     sentiment_score: float = Field(..., description="Normalized VADER audience sentiment score (0.0 to 1.0)")
     collaborative_score: Optional[float] = Field(None, description="MovieLens collaborative match (0.0 to 1.0) or None if cold start")
     is_cold_start: bool = Field(..., description="True if film lacks collaborative data in MovieLens")
     explanation: str = Field(..., description="Human-readable rationale for the recommendation")
+    explanation_details: Optional[ExplanationDetails] = None
 
 
 class MovieRecommendationSchema(BaseModel):
@@ -95,6 +102,8 @@ class MovieRecommendationSchema(BaseModel):
     hybrid_score: float = Field(..., description="Overall score out of 100")
     match_percentage: int = Field(..., description="Normalized integer percentage 0-100%")
     score_breakdown: ScoreBreakdownSchema
+    explanation_details: Optional[ExplanationDetails] = None
+    is_personalized: Optional[bool] = Field(False, description="True if boosted/personalized for user session")
     watch_providers: Optional[WatchProvidersData] = Field(
         None,
         description="IN-region streaming providers from TMDB JustWatch. Empty/None when unavailable."
@@ -151,3 +160,142 @@ class HealthResponse(BaseModel):
     database_target: str
     dependencies: dict[str, Any]
     provenance: ProvenanceSchema
+
+
+# ── Feedback Schemas (Feature 3) ─────────────────────────────────────────────
+
+class FeedbackCreateRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=64, description="Anonymous or user session UUID")
+    source_tmdb_id: Optional[int] = Field(None, description="Source seed movie TMDB ID if applicable")
+    recommended_tmdb_id: int = Field(..., description="Target recommended movie TMDB ID")
+    vote: Literal["like", "dislike", "up", "down"] = Field(..., description="Binary feedback vote")
+    rating: Optional[float] = Field(None, ge=1.0, le=5.0, description="Optional 1-5 star user rating")
+    hybrid_score: Optional[float] = Field(None, description="Recorded hybrid match score at recommendation time")
+    is_cold_start: Optional[bool] = Field(False, description="Whether cold-start weights were applied")
+
+
+class FeedbackItemSchema(BaseModel):
+    session_id: str
+    source_tmdb_id: Optional[int] = None
+    recommended_tmdb_id: int
+    vote: str
+    rating: Optional[float] = None
+    hybrid_score: Optional[float] = None
+    is_cold_start: bool = False
+    created_at: Optional[Any] = None
+
+
+class FeedbackResponse(BaseModel):
+    session_id: str
+    feedback: list[FeedbackItemSchema]
+    total: int
+
+
+# ── Watchlist Schemas (Feature 5) ────────────────────────────────────────────
+
+class WatchlistAddRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=64)
+    tmdb_id: int
+    title: str = Field(..., min_length=1, max_length=255)
+    poster_url: Optional[str] = ""
+    release_date: Optional[str] = ""
+    vote_average: Optional[float] = 0.0
+    genres: Optional[str] = ""
+    original_language: Optional[str] = "en"
+
+
+class WatchlistItemSchema(BaseModel):
+    id: Optional[int] = None
+    session_id: str
+    tmdb_id: int
+    title: str
+    poster_url: str = ""
+    release_date: str = ""
+    vote_average: float = 0.0
+    genres: str = ""
+    original_language: str = "en"
+    created_at: Optional[Any] = None
+
+
+class WatchlistResponse(BaseModel):
+    session_id: str
+    watchlist: list[WatchlistItemSchema]
+    total: int
+
+
+# ── Mood Recommendations Schema (Feature 6) ──────────────────────────────────
+
+class MoodRecommendationRequest(BaseModel):
+    mood: str = Field(..., description="E.g., Happy, Emotional, Excited, Romantic, Thoughtful, Thrilling, Funny, Relaxed, Motivated")
+    session_id: Optional[str] = None
+    top_k: int = Field(10, ge=1, le=50)
+    language: Optional[str] = None
+
+
+# ── Natural Language Search Schema (Feature 7) ───────────────────────────────
+
+class NaturalSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=300)
+    session_id: Optional[str] = None
+    top_k: int = Field(10, ge=1, le=50)
+
+
+class DetectedFilters(BaseModel):
+    language: Optional[str] = None
+    mood: Optional[str] = None
+    genres: list[str] = Field(default_factory=list)
+    runtime_max: Optional[int] = None
+    year_min: Optional[int] = None
+    keywords: list[str] = Field(default_factory=list)
+
+
+class NaturalSearchResponse(BaseModel):
+    original_query: str
+    detected_filters: DetectedFilters
+    results: list[MovieRecommendationSchema]
+    total_results: int
+
+
+# ── Movie Comparison Schema (Feature 8) ──────────────────────────────────────
+
+class CompareRequest(BaseModel):
+    movie_ids: list[int] = Field(..., min_length=2, max_length=4, description="2 to 4 TMDB IDs to compare")
+
+
+class MovieComparisonItem(BaseModel):
+    tmdb_id: int
+    title: str
+    poster_url: str
+    backdrop_url: str = ""
+    release_date: str
+    year: str
+    genres: list[str]
+    runtime: Optional[int] = None
+    vote_average: float
+    vote_count: int
+    sentiment_score: float
+    sentiment_label: str
+    strengths: list[str]
+    weaknesses: list[str]
+    watch_providers: Optional[WatchProvidersData] = None
+
+
+class CompareResponse(BaseModel):
+    movies: list[MovieComparisonItem]
+    winner_ratings: Optional[str] = None
+    winner_sentiment: Optional[str] = None
+
+
+# ── User Analytics Schema (Feature 15) ────────────────────────────────────────
+
+class UserAnalyticsResponse(BaseModel):
+    session_id: str
+    total_feedback: int
+    liked_count: int
+    disliked_count: int
+    average_rating: Optional[float] = None
+    watchlist_count: int
+    favorite_genres: list[dict[str, Any]] = Field(default_factory=list)
+    favorite_languages: list[dict[str, Any]] = Field(default_factory=list)
+    personalized_ready: bool = False
+

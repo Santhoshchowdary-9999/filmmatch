@@ -4,6 +4,8 @@ import React, { useState } from "react";
 import { Star, ArrowRight, Loader2, Trophy } from "lucide-react";
 import { CatalogMovie, MovieRecommendation } from "@/types";
 import { MoviePoster } from "./MoviePoster";
+import { WatchlistButton } from "./WatchlistButton";
+import { useWatchlist } from "@/utils/useWatchlist";
 
 interface MovieCardProps {
   movie: CatalogMovie | MovieRecommendation;
@@ -23,6 +25,8 @@ export const MovieCard: React.FC<MovieCardProps> = ({
   onFindMatches,
 }) => {
   const [hovered, setHovered] = useState(false);
+  const { isInWatchlist, addToWatchlist, removeFromWatchlist } = useWatchlist();
+  const inWatchlist = isInWatchlist(movie.tmdb_id);
 
   const title    = movie.title || "Unknown Title";
   const posterUrl = "poster_url" in movie ? movie.poster_url : movie.poster;
@@ -77,35 +81,54 @@ export const MovieCard: React.FC<MovieCardProps> = ({
         />
 
         {/* ── Top badges ── */}
-        <div className="absolute top-2 left-2 right-2 flex items-center justify-between pointer-events-none z-10">
-          {/* Rank badge */}
-          {rankIndex !== undefined && (
-            <div
-              className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-black ${
-                isTopRank
-                  ? "bg-[var(--amber)] text-[#0B0B0D]"
-                  : "bg-surface-1/90 text-[#A8A5A0] border border-white/[0.08]"
-              }`}
-            >
-              {isTopRank && <Trophy className="w-2.5 h-2.5 fill-current" />}
-              #{rankIndex}
-            </div>
-          )}
+        <div className="absolute top-2 left-2 right-2 flex items-center justify-between z-10 pointer-events-auto">
+          {/* Rank & Personalization badge */}
+          <div className="flex items-center gap-1">
+            {rankIndex !== undefined && (
+              <div
+                className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-black ${
+                  isTopRank
+                    ? "bg-[var(--amber)] text-[#0B0B0D]"
+                    : "bg-surface-1/90 text-[#A8A5A0] border border-white/[0.08]"
+                }`}
+              >
+                {isTopRank && <Trophy className="w-2.5 h-2.5 fill-current" />}
+                #{rankIndex}
+              </div>
+            )}
+            {recData?.is_personalized && (
+              <div className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/90 text-white shadow">
+                For You
+              </div>
+            )}
+          </div>
 
-          {/* Match % for recommendations */}
-          {recData && (
-            <div className="badge-match ml-auto">
-              {recData.match_percentage}%
-            </div>
-          )}
+          <div className="flex items-center gap-1.5 ml-auto">
+            <WatchlistButton
+              isInWatchlist={inWatchlist}
+              onToggle={(e) => {
+                e.stopPropagation();
+                if (inWatchlist) removeFromWatchlist(movie.tmdb_id);
+                else addToWatchlist(movie);
+              }}
+              size="sm"
+            />
 
-          {/* Star rating for catalog cards */}
-          {!recData && rating > 0 && (
-            <div className="badge-gold ml-auto">
-              <Star className="w-2.5 h-2.5 fill-current" />
-              {rating.toFixed(1)}
-            </div>
-          )}
+            {/* Match % for recommendations */}
+            {recData && (
+              <div className="badge-match">
+                {recData.match_percentage}%
+              </div>
+            )}
+
+            {/* Star rating for catalog cards */}
+            {!recData && rating > 0 && (
+              <div className="badge-gold">
+                <Star className="w-2.5 h-2.5 fill-current" />
+                {rating.toFixed(1)}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

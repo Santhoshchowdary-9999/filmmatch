@@ -18,6 +18,7 @@ class ScoreBreakdown:
     collaborative_score: Optional[float]
     is_cold_start: bool
     explanation: str
+    reasons: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -66,6 +67,41 @@ class HybridRecommendationEngine:
         self.content_engine = content_engine or ContentSimilarityEngine()
         self.sentiment_engine = sentiment_engine or AudienceSentimentEngine()
         self.collab_engine = collab_engine or CollaborativeFilteringEngine()
+
+    def generate_explanation_details(
+        self,
+        source_movie: MovieMetadata,
+        candidate: MovieMetadata,
+        content_res: ContentScoreResult,
+        sentiment_res: SentimentScoreResult,
+        collab_res: CollabScoreResult,
+        is_cold_start: bool,
+    ) -> list[str]:
+        """Generates structured, bulleted reasons explaining the recommendation."""
+        reasons: list[str] = []
+        c_pct = int(round(content_res.content_similarity * 100))
+        reasons.append(f"{c_pct}% story and narrative similarity with {source_movie.title}")
+
+        s_val = sentiment_res.sentiment_score
+        if s_val >= 0.75:
+            reasons.append(f"Strong positive audience sentiment ({int(round(s_val * 100))}% praise)")
+        elif s_val >= 0.55:
+            reasons.append(f"Favorable viewer reviews ({int(round(s_val * 100))}% positive rating)")
+        else:
+            reasons.append("Balanced critical and audience reception")
+
+        if not is_cold_start and collab_res.collab_score is not None and collab_res.collab_score > 0.4:
+            reasons.append(f"Similar viewers on MovieLens highly enjoyed this film ({int(round(collab_res.collab_score * 100))}% affinity)")
+        else:
+            reasons.append("Trending new release match (Content + Audience score)")
+
+        common_genres = [g for g in candidate.genres if g in source_movie.genres]
+        if common_genres:
+            reasons.append(f"Matches preferred genres ({', '.join(common_genres[:3])})")
+        elif content_res.matched_features:
+            reasons.append(f"Shared themes: {', '.join(content_res.matched_features[:2])}")
+
+        return reasons
 
     def generate_explanation(
         self,
@@ -224,12 +260,22 @@ class HybridRecommendationEngine:
                 is_cold_start=is_item_cold_start,
             )
 
+            reasons = self.generate_explanation_details(
+                source_movie=source_movie,
+                candidate=candidate,
+                content_res=c_res,
+                sentiment_res=s_res,
+                collab_res=cb_res,
+                is_cold_start=is_item_cold_start,
+            )
+
             breakdown = ScoreBreakdown(
                 content_similarity=c_res.content_similarity,
                 sentiment_score=s_res.sentiment_score,
                 collaborative_score=applied_collab_val,
                 is_cold_start=is_item_cold_start,
                 explanation=explanation,
+                reasons=reasons,
             )
 
             rec = MovieRecommendation(
